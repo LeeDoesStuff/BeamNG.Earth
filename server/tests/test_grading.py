@@ -596,6 +596,72 @@ class UnderpassShortfallTest(unittest.TestCase):
         self.assertAlmostEqual(float(off[0]), 10.0, delta=0.3, msg="BNE_UNDERPASS_ANY=off: as before")
 
 
+class TownCutTest(unittest.TestCase):
+    def test_a_town_motorway_gives_way_under_a_street_bridge(self):
+        """A street's bridge over a motorway in town (gives_way: built-up land, the trench's concrete wall): the
+        motorway's trench is cut to the clearance under the deck and the street stays at its level; in the country the
+        same overpass rises on its ramps (Brooklyn's Prospect Expressway: the DEM is interpolated under the 11th Avenue
+        decks, and the ramps lifted the streets 5-7 m into humps)."""
+        mway = [(-400, 0), (400, 0)]
+        bridge = [(0, -20), (0, 20)]
+        ramps = [[(0, -260), (0, -20)], [(0, 20), (0, 260)]]
+        f = features([mway, bridge] + ramps, ["motorway", "tertiary", "tertiary", "tertiary"], flags=[(1, "is_bridge")])
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 300.0, 0.0, 0.0]), np.array([0.0, 0.0, 24.0, 100.0]), 0.0)
+
+        def heights(urban):
+            g = grading.Grader(FRAME, FakeMD(f), lambda la_, lo_: np.full(np.shape(la_), 10.0), urban=urban)
+            return g.apply(la, lo, np.full(4, 10.0))
+        town = heights(lambda la_, lo_: np.ones(np.shape(la_), bool))
+        self.assertAlmostEqual(float(town[0]), 10.0 - min(grading.UNDER_CLEAR_M, grading.UNDER_MAX_DROP_M), delta=0.3,
+                               msg="the motorway dips to the clearance under the deck")
+        self.assertAlmostEqual(float(town[1]), 10.0, delta=0.1, msg="back up past its ramp")
+        self.assertAlmostEqual(float(town[2]), 10.0, delta=0.3, msg="the street at the abutment: no ramp")
+        self.assertAlmostEqual(float(town[3]), 10.0, delta=0.3, msg="nor along the street")
+        country = heights(None)
+        self.assertAlmostEqual(float(country[0]), 10.0, delta=0.3, msg="in the country the overpass rises")
+        self.assertGreater(float(country[2]), 10.0 + 0.6 * grading.UNDER_CLEAR_M, "the street's ramp")
+        with unittest.mock.patch.object(grading, "TOWN_CUT_ON", False):
+            off = heights(lambda la_, lo_: np.ones(np.shape(la_), bool))
+        self.assertGreater(float(off[2]), 10.0 + 0.6 * grading.UNDER_CLEAR_M, "BNE_TOWN_CUT=off: the ramps as before")
+        self.assertAlmostEqual(float(off[0]), 10.0, delta=0.3)
+
+    def test_a_bridge_range_ending_inside_the_cutting(self):
+        """The map's bridge stops short of the real abutment, on the trench's slope (Overture's 11th Avenue over the
+        Prospect Expressway, ~10 m inside the trench): the ramps and the underpass dip take the abutment as the
+        street's plan fills it (abutment_height), not the DEM in the trench. The trench is 6 m deep in the DEM
+        (4 m where the street is 10 m), the bridge ends 5 m inside it, so roads._skew_decks carries the deck a few
+        metres onto each street part: a chain of three, one span. A motorway's link in the trench gives way too."""
+        mway = [(-400, 0), (400, 0)]
+        link = [(-300, 5), (300, 5)]
+        bridge = [(0, -10), (0, 10)]
+        ramps = [[(0, -260), (0, -10)], [(0, 10), (0, 260)]]
+        f = features([mway, link, bridge] + ramps, ["motorway", "motorway", "tertiary", "tertiary", "tertiary"],
+                     flags=[(2, "is_bridge")])
+        f.rules["subclass"] = rules([(1, "link")])
+
+        def trench(la_, lo_):
+            _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la_), np.asarray(lo_), 0.0)
+            return np.where(np.abs(np.asarray(n)) < 15.0, 4.0, 10.0)
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0, 300.0, 0.0, 0.0, 0.0]), np.array([0.0, 0.0, 12.0, 60.0, 5.0]),
+                                          0.0)
+        base = trench(la, lo)
+
+        def heights(urban):
+            g = grading.Grader(FRAME, FakeMD(f), trench, urban=urban)
+            return g.apply(la, lo, base)
+        town = heights(lambda la_, lo_: np.ones(np.shape(la_), bool))
+        self.assertAlmostEqual(float(town[0]), 10.0 - grading.UNDER_CLEAR_M, delta=0.3,
+                               msg="the trench cut to the clearance under the street's level, not under its own slope")
+        self.assertAlmostEqual(float(town[1]), 4.0, delta=0.1, msg="the trench as it is past the dip")
+        self.assertAlmostEqual(float(town[2]), 10.0, delta=0.3, msg="the street filled to its level at the abutment")
+        self.assertAlmostEqual(float(town[3]), 10.0, delta=0.1)
+        self.assertLess(float(town[4]), 10.0 - grading.UNDER_CLEAR_M + 0.5, "the link in the trench gives way too")
+        country = heights(None)
+        need = 4.0 + roads.DECK_ROAD_CLEAR + grading.APPROACH_MARGIN_M      # (the deck over the trench's floor)
+        self.assertAlmostEqual(float(country[2]), need, delta=0.4, msg="the ramp from the filled street, not from the slope")
+        self.assertAlmostEqual(float(country[0]), 4.0, delta=0.3, msg="the overpass rises: the trench stays")
+
+
 class RacewayKeepTest(unittest.TestCase):
     def test_track_surface_is_the_terrain(self):
         """A road crossing a racetrack at grade: on the track (its carriageway + margin) the terrain stays as it is

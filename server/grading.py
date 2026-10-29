@@ -172,6 +172,13 @@ UNDER_REACH_M = UNDER_FLAT_M + UNDER_MAX_DROP_M * math.pi / UNDER_GRADE + 2 * UN
 # road's bridge whose ramps the frontage roads at both ends held down sat ~1 m over the motorway; the 30 m elevation
 # data has no cutting under it, and the AI car drove into its abutment wall, 2026-10-25)
 UNDER_ANY_ON = os.environ.get("BNE_UNDERPASS_ANY", "on") != "off"
+# ... and a motorway in a town cut gives way first (gives_way): the street bridges over it stay at the street's level
+# and its trench is cut to the clearance under them (the dip, UNDER_MAX_DROP_M at most; the ramps raise only what is
+# left). A rural overpass stands on earth ramps; a city's depressed expressway runs under streets at grade, and the
+# bare-earth DEM is interpolated across its trench under their decks (-0.1 to 2.4 m deep at the 11th Avenue bridges
+# over Brooklyn's Prospect Expressway, 6.5 m between them), so the ramps lifted the streets 5-7 m into humps
+# (tools/nyc/depth_check.py, 2026-10-29)
+TOWN_CUT_ON = os.environ.get("BNE_TOWN_CUT", "on") != "off"
 ABUT_NEAR_M = 14.0          # m from the bridge end the road is checked ...
 ABUT_FAR_M = 40.0           # ... against its grade from ABUT_NEAR_M to this far
 ABUT_STEEP = 0.15           # a fall this much steeper than that grade, near the end: the valley's side, not the road
@@ -329,11 +336,11 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True):
                 zx, nb = zx[nb:], 0
             if ab[1] and na:
                 zx, na = zx[:len(zx) - na], 0
-            z = zx[nb:nb + len(xy)]
+            # (filled with the extension past its other end in the profile: the fill's grade is read ABUT_NEAR_M to
+            # ABUT_FAR_M from the abutment, further than a short part reaches)
             for at_end in (False, True):
                 if ab[int(at_end)]:
-                    z = fill_abutment(z, at_end)
-            zx = np.concatenate([zx[:nb], z, zx[nb + len(xy):]])
+                    zx = fill_abutment(zx, at_end, step)
         pin = pins[j] if pins is not None else (None, None)
         if pin[0] is not None and not nb and not ab[0]:     # (the end sample held: the smoothing keeps an end's height)
             zx = zx.copy()
@@ -556,11 +563,27 @@ class Grader:
             return specs
         try:
             town = roadsmod.road_specs(feats, self.urban, None)
+            out = [sp._replace(urban=True) if sp is not None and t is not None and t.urban
+                   and sp.cls in roadsmod.CONCRETE_WALL_CLASSES else sp for sp, t in zip(specs, town)]
+            # (a link is never urban in road_specs, its width being its own: the land cover at its points, in one
+            # call; the ramps in a city trench beside the expressway take its concrete wall and give way under the
+            # street bridges as it does, gives_way: Brooklyn's Prospect Expressway, 2026-10-29)
+            links = [i for i, sp in enumerate(out) if sp is not None and _is_link(sp) and not sp.urban
+                     and sp.cls in roadsmod.CONCRETE_WALL_CLASSES]
+            if links:
+                spans = [(feats.coord_off[feats.ring_off[feats.part_off[i]]],
+                          feats.coord_off[feats.ring_off[feats.part_off[i + 1]]]) for i in links]
+                ll = np.concatenate([feats.lonlat[a:b] for a, b in spans])
+                u = np.asarray(self.urban(ll[:, 1], ll[:, 0]), bool)
+                k = 0
+                for i, (a, b) in zip(links, spans):
+                    if b > a and float(np.mean(u[k:k + (b - a)])) >= roadsmod.URBAN_SHARE:
+                        out[i] = out[i]._replace(urban=True)
+                    k += b - a
+            return out
         except Exception as e:          # rural walls rather than no grading
             log.debug("grading: town roads: %s: %s", type(e).__name__, e)
             return specs
-        return [sp._replace(urban=True) if sp is not None and t is not None and t.urban
-                and sp.cls in roadsmod.CONCRETE_WALL_CLASSES else sp for sp, t in zip(specs, town)]
 
     def _cell_plans(self, key):
         with self.lock:
@@ -1042,41 +1065,73 @@ class Grader:
                     ground[(fid, j)] = (line, sg, med)
         if not bridges or not ground:
             return
-        # (single spans: neither end continues into another bridge part; deduplicated across cells)
+        # (single spans, or short chains of parts joined at their ends: the pieces a deck is carried onto the roads it
+        # joins (roads._skew_decks), a deck forking at its end (11th Avenue's over Brooklyn's Prospect Expressway: three
+        # parts, so no span, and no dip under a street deck 5 m over the trench floor, 2026-10-29); UNDER_MAX_BRIDGE_M
+        # over the chain, its abutments at the chain's free ends (an inner joint is none); deduplicated across cells;
+        # a railway's line alone, straight whatever it joins)
         uniq, seen = [], set()
         for b, fixed, rail in bridges:
-            k2 = (round(float(b[0, 0]), 1), round(float(b[0, 1]), 1), round(float(b[-1, 0]), 1), len(b))
+            k2 = _span_key(b)
             if k2 not in seen:
                 seen.add(k2)
                 uniq.append((b, fixed, rail))
-        spans = []
         ue = np.array([[b[0, :2], b[-1, :2]] for b, _f, _r in uniq], f64)        # (n, 2 ends, 2)
-        for n, (b, fixed, rail) in enumerate(uniq):
-            L = float(np.hypot(*np.diff(b, axis=0).T).sum())
-            if L < 2 * APPROACH_MIN_CROSS_M or (L > UNDER_MAX_BRIDGE_M and not rail):
+        parent = list(range(len(uniq)))
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+        for n, (b, _f, rail) in enumerate(uniq):
+            if rail:
                 continue
             d = np.hypot(ue[:, :, None, 0] - ue[n, None, None, :, 0], ue[:, :, None, 1] - ue[n, None, None, :, 1])
             d[n] = np.inf                       # (another part's end within 0.75 m of either of its ends: joined)
-            if rail or not (d < 0.75).any():
-                spans.append((b, L, fixed))
+            for m in np.flatnonzero((d < 0.75).any(axis=(1, 2))):
+                if not uniq[m][2]:
+                    parent[find(int(m))] = find(n)
+        groups = {}
+        for n in range(len(uniq)):
+            groups.setdefault(find(n), []).append(n)
+        spans = []          # (line, L, fixed, (start free, end free), the chain's free ends [(xy, fixed)] or None alone)
+        for ms in groups.values():
+            Ls = {m: float(np.hypot(*np.diff(uniq[m][0], axis=0).T).sum()) for m in ms}
+            if not uniq[ms[0]][2] and sum(Ls.values()) > UNDER_MAX_BRIDGE_M:
+                continue
+            pts = [(m, e) for m in ms for e in (0, 1)]
+            free = {(m, e): not any(np.hypot(*(ue[m2, e2] - ue[m, e])) < 0.75 for m2, e2 in pts if m2 != m)
+                    for m, e in pts}
+            ends = [(ue[m, e], uniq[m][1]) for (m, e), fr in free.items() if fr]
+            if not ends:
+                continue                        # (a ring of decks: no abutment)
+            for m in ms:
+                if len(ms) == 1 and Ls[m] < 2 * APPROACH_MIN_CROSS_M:
+                    continue
+                spans.append((uniq[m][0], Ls[m], uniq[m][1], (free[(m, 0)], free[(m, 1)]), ends if len(ms) > 1 else None))
         if not spans:
             return
         gids = sorted(ground)
         lines = [ground[g][0] for g in gids]
-        crs = roadsmod._crossings_by([b for b, _L, _f in spans], lines)
+        crs = roadsmod._crossings_by([sp[0] for sp in spans], lines)
         ez, raised = {}, set()
+        first = np.array([ln[0] for ln in lines], f64)
+        last = np.array([ln[-1] for ln in lines], f64)
 
-        def deck_ends(j):           # (an overpass's abutments' ground, raised when it is: as high as its ramps could
-            got = ez.get(j)         # take them; asked only for one a road crosses under: every span's took 2 s a
-            if got is None:         # Canton cell, 2026-10-25)
-                b, _L, fixed = spans[j]
-                ends = np.array([b[0], b[-1]], f64)
-                ela, elo, _ = self.frame.enu_to_geodetic(ends[:, 0], ends[:, 1], 0.0)
-                got = np.asarray(self.elev(np.asarray(ela), np.asarray(elo)), f64).reshape(2).copy()
+        def z_at(p):
+            pla, plo, _ = self.frame.enu_to_geodetic(p[:, 0], p[:, 1], 0.0)
+            return np.asarray(self.elev(np.asarray(pla, f64), np.asarray(plo, f64)), f64).ravel()
+
+        def end_height(end, fixed):     # (an overpass's abutment's ground as the approaches' plans fill it
+            k2 = (round(float(end[0]), 1), round(float(end[1]), 1))     # (abutment_height), raised when it is: as high
+            got = ez.get(k2)            # as its ramps could take it; asked only for one a road crosses under: every
+            if got is None:             # span's took 2 s a Canton cell, 2026-10-25)
+                touch = (np.hypot(*(first - end).T) <= APPROACH_TOUCH_M) | (np.hypot(*(last - end).T) <= APPROACH_TOUCH_M)
+                got = abutment_height(end, [lines[m] for m in np.flatnonzero(touch)], z_at, lines)
                 if not fixed:
-                    got[0] += self._end_raised(b[0])
-                    got[1] += self._end_raised(b[-1])
-                ez[j] = got
+                    got += self._end_raised(np.asarray(end, f64))
+                ez[k2] = got
             return got
         cands = []
         for i, cr in enumerate(crs):
@@ -1087,12 +1142,15 @@ class Grader:
             ab = np.diff(xy, axis=0)
             for c in cr:
                 bi, arc_b, pt = c[0], c[1], np.asarray(c[2], f64)
-                b, L, fixed = spans[bi]
-                if arc_b < APPROACH_MIN_CROSS_M or arc_b > L - APPROACH_MIN_CROSS_M:
+                b, L, fixed, free, chain_ends = spans[bi]
+                if (arc_b < APPROACH_MIN_CROSS_M and free[0]) or (arc_b > L - APPROACH_MIN_CROSS_M and free[1]):
                     continue                    # a junction at the bridge's end
-                ze = deck_ends(bi)
-                corridor = np.clip([arc_b - roadsmod.DECK_CLEAR_REACH_M, arc_b + roadsmod.DECK_CLEAR_REACH_M], 0.0, L)
-                deck = float(np.min(ze[0] + (ze[1] - ze[0]) * corridor / L))
+                if chain_ends is None:
+                    ze = (end_height(b[0], fixed), end_height(b[-1], fixed))
+                    corridor = np.clip([arc_b - roadsmod.DECK_CLEAR_REACH_M, arc_b + roadsmod.DECK_CLEAR_REACH_M], 0.0, L)
+                    deck = float(np.min(ze[0] + (ze[1] - ze[0]) * corridor / L))
+                else:                           # (a chain: as low as its lowest abutment, the whole deck over)
+                    deck = min(end_height(p, fx) for p, fx in chain_ends)
                 # where along this road (its nearest vertex segment)
                 t = np.clip(((pt - xy[:-1]) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0.0, 1.0)
                 j = int(np.argmin(np.linalg.norm(xy[:-1] + t[:, None] * ab - pt, axis=1)))
@@ -1266,7 +1324,8 @@ class Grader:
         f = self.md.cell(k, layers=("roads",), kind="demand").layers.get("roads")
         if f is not None and len(f):
             bs = roadsmod.bridge_specs(f)
-            rs = roadsmod.road_specs(f, None, self.widths) if ground else [None] * len(f)
+            # (in town on the concrete-wall classes, for gives_way: as _make_cell's plans have it)
+            rs = self._town_walls(f, roadsmod.road_specs(f, None, self.widths)) if ground else [None] * len(f)
             for i in range(len(f)):
                 if bs[i] is None and rs[i] is None:
                     continue
@@ -1295,7 +1354,7 @@ class Grader:
                         # (and the tracks on the ground: a road bridge's approaches rise over them as over a road,
                         # GitHub #324)
                         rail_g += [np.asarray(r, np.float64) for r in rings if len(r) >= 2]
-        bridges, ground_l, ends, end_of, bcls, ground_ids = [], [], [], [], [], []
+        bridges, ground_l, ends, end_of, bcls, ground_ids, sunk = [], [], [], [], [], [], []
         items = sorted(parts.items())
         if items:               # (the frame's conversion once for every part: it is per call)
             allr = np.concatenate([ring for _k, (ring, _sp) in items])
@@ -1314,6 +1373,7 @@ class Grader:
             else:
                 ground_l.append((line, sp.width / 2 + shoulder(sp), sp.cls))
                 ground_ids.append((fid, j, profile_sigma(sp), MEDIAN_M if sp.kind in roadsmod.BUILT else DIRT_MEDIAN_M))
+                sunk.append(gives_way(sp))
         rail_xy, rail_gxy = [], []
         if rail or rail_g:
             allr = np.concatenate(rail + rail_g)
@@ -1324,35 +1384,37 @@ class Grader:
                 out_.append(rxy[k0:k0 + len(ring)])
                 k0 += len(ring)
         return {"bridges": bridges, "bridge_cls": bcls, "ground": ground_l, "ground_ids": ground_ids, "end_of": end_of,
-                "ends": np.asarray(ends, np.float64).reshape(-1, 2), "rail_bridges": rail_xy, "rail_ground": rail_gxy}
+                "ends": np.asarray(ends, np.float64).reshape(-1, 2), "rail_bridges": rail_xy, "rail_ground": rail_gxy,
+                "gives_way": sunk}      # (per ground part: lowered under a bridge before its ramps rise, gives_way)
 
     def _ground_table(self, keys, cs):
         """The ground road parts of the cells keys (cs: their _cell_enu), each once (the first copy, by its first point
-        and length), in their order: (lines, half widths, boxes' lo (n, 2), hi (n, 2), first points, last points).
-        Kept per cell set (every bridge end near them asks: a loop over each part per end was most of
-        _lift_approaches, 2026-10-25)."""
+        and length), in their order: (lines, half widths, boxes' lo (n, 2), hi (n, 2), first points, last points,
+        gives way (n,) bool). Kept per cell set (every bridge end near them asks: a loop over each part per end was
+        most of _lift_approaches, 2026-10-25)."""
         mk = tuple(str(k) for k in keys)
         memo = self.__dict__.setdefault("_ground_tables", {})
         with self.lock:
             got = memo.get(mk)
         if got is not None and all(a is b for a, b in zip(got[0], cs)):
             return got[1]
-        lines, halves, seen = [], [], set()
+        lines, halves, sunk, seen = [], [], [], set()
         for c in cs:
-            for line, half, _cls in c["ground"]:
+            for (line, half, _cls), way in zip(c["ground"], c.get("gives_way") or [False] * len(c["ground"])):
                 key = (round(float(line[0, 0]), 1), round(float(line[0, 1]), 1), len(line))
                 if key in seen:
                     continue
                 seen.add(key)
                 lines.append(line)
                 halves.append(half)
+                sunk.append(bool(way))
         f64 = np.float64
         if lines:
             tab = (lines, halves, np.array([ln.min(0) for ln in lines], f64), np.array([ln.max(0) for ln in lines], f64),
-                   np.array([ln[0] for ln in lines], f64), np.array([ln[-1] for ln in lines], f64))
+                   np.array([ln[0] for ln in lines], f64), np.array([ln[-1] for ln in lines], f64), np.array(sunk, bool))
         else:
             z = np.zeros((0, 2), f64)
-            tab = (lines, halves, z, z, z, z)
+            tab = (lines, halves, z, z, z, z, np.zeros(0, bool))
         with self.lock:
             if len(memo) > 64:
                 memo.clear()
@@ -1383,7 +1445,7 @@ class Grader:
         spans = [bridge] + chain        # (a road under any part of the chain is spanned, not beside the ramp: #138)
         blo = np.min([b.min(0) for b in spans], axis=0)
         bhi = np.max([b.max(0) for b in spans], axis=0)
-        lines, halves, lo_l, hi_l, first, last = self._ground_table(keys, cs)
+        lines, halves, lo_l, hi_l, first, last, way = self._ground_table(keys, cs)
         near = np.flatnonzero(~((hi_l < lo_b).any(1) | (lo_l > hi_b).any(1)))   # (the rest nowhere near the bridge)
         tch = np.minimum(np.hypot(first[near, 0] - xy[0], first[near, 1] - xy[1]),
                          np.hypot(last[near, 0] - xy[0], last[near, 1] - xy[1])) <= APPROACH_TOUCH_M
@@ -1392,9 +1454,10 @@ class Grader:
         crossing = np.zeros(len(near), bool)
         for n, cr in zip(inbox, roadsmod._crossings_by(spans, [lines[near[n]] for n in inbox])):
             crossing[n] = bool(cr)
+        sunk = []       # (the roads under it that give way: a town motorway's trench is cut under the bridge first)
         for n, i in enumerate(near):
             line, half = lines[i], halves[i]
-            ground.append(line)
+            (sunk if way[i] else ground).append(line)
             touches = bool(tch[n])
             under = bool(crossing[n])
             if touches:
@@ -1411,7 +1474,10 @@ class Grader:
         def z_at(p):
             la_, lo_, _ = self.frame.enu_to_geodetic(p[:, 0], p[:, 1], 0.0)
             return np.asarray(self.elev(la_, lo_), np.float64)
-        for end, lift in bridge_lifts(bridge, bridges, ground, z_at, chain, rails):
+        # (the abutment as the approaches' plans fill it, at the end asked for; the other end's lift is not returned)
+        ez = abutment_height(xy, [ln for ln, _h in approaches], z_at, [lines[i] for i in near])
+        end_z = tuple(ez if np.hypot(*(e - xy)) <= APPROACH_TOUCH_M else None for e in (bridge[0], bridge[-1]))
+        for end, lift in bridge_lifts(bridge, bridges, ground, z_at, chain, rails, sunk, end_z):
             if np.hypot(*(end - xy)) <= APPROACH_TOUCH_M:
                 return lift, others, approaches
         return None
@@ -1842,6 +1908,13 @@ def grade_points(px, py, base, plans, lift=0.0):
                                  float(SIDE_FADE_M), float(SHARP_STEP_M))
 
 
+def _span_key(b):
+    """A bridge part's identity across the cells' copies of it (its ends to 0.1 m and its point count)."""
+    b = np.asarray(b, np.float64)
+    return (round(float(b[0, 0]), 1), round(float(b[0, 1]), 1), round(float(b[-1, 0]), 1), round(float(b[-1, 1]), 1),
+            len(b))
+
+
 def bridge_chain(line, all_bridges):
     """The bridge parts joined to line through their ends (within 0.75 m), line itself excluded. Pure."""
     line = np.asarray(line, np.float64)[:, :2]
@@ -1862,14 +1935,17 @@ def bridge_chain(line, all_bridges):
     return out
 
 
-def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=()):
+def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=(), sunk_lines=(), end_z=(None, None)):
     """[(end xy (2,), lift m)] of a bridge part (line (k, 2) ENU m): at each of its ends that no other bridge part
     continues from (an abutment), how far the ground there must be raised for the deck to clear every road crossing
     under it (roads.DECK_ROAD_CLEAR + APPROACH_MARGIN_M over the road, full height within APPROACH_FLAT_M of the end,
     then falling at roads.DECK_GRADE), within [APPROACH_MIN_LIFT, APPROACH_MAX_LIFT]. Roads crossing within
     APPROACH_MIN_CROSS_M of either end meet it at grade and do not count; railways (rail_lines) always count (a track
-    never meets a road deck at grade: the deck ended 3 m past one at Vitebsk, GitHub #324). z_at(xy (n, 2)) -> ground
-    m. Pure given z_at."""
+    never meets a road deck at grade: the deck ended 3 m past one at Vitebsk, GitHub #324); roads that give way
+    (sunk_lines: a town motorway's trench, gives_way) count UNDER_MAX_DROP_M lower than their ground, the dip they
+    get under the deck (_lower_underpasses), so the ramps raise only what the dip cannot give. z_at(xy (n, 2)) ->
+    ground m; end_z: the ground at the line's (first, last) end as the approaches' plans have it (abutment_height),
+    None for z_at's. Pure given z_at."""
     line = np.asarray(line, np.float64)[:, :2]
     if len(line) < 2:
         return []
@@ -1881,11 +1957,29 @@ def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=(
         return []
     cr = roadsmod._crossings([line], ground_lines)
     nr = len(cr)
+    # (only under the short spans the dip is made for (_lower_underpasses: UNDER_MAX_BRIDGE_M over the part and the
+    # chain it is in, each part once); under a long deck the road gives nothing, and the ramps rise for it as for any
+    # road)
+    seen = {_span_key(line)}
+    chain_m = 0.0
+    for part in (chain or ()):
+        k = _span_key(part)
+        if k not in seen:
+            seen.add(k)
+            chain_m += float(np.hypot(*np.diff(np.asarray(part, np.float64)[:, :2], axis=0).T).sum())
+    if s[-1] + chain_m > UNDER_MAX_BRIDGE_M:
+        ground_lines, sunk_lines = list(ground_lines) + list(sunk_lines), ()
+        cr = roadsmod._crossings([line], ground_lines)
+        nr = len(cr)
+    if sunk_lines:
+        cr = cr + roadsmod._crossings([line], list(sunk_lines))
+    ns = len(cr)
     if rail_lines:
         cr = cr + roadsmod._crossings([line], list(rail_lines))
     if not cr and not chain:
         return []
     zu = z_at(np.array([c[2] for c in cr], np.float64).reshape(-1, 2)) if cr else np.zeros(0)
+    zu = zu - np.where((np.arange(len(cr)) >= nr) & (np.arange(len(cr)) < ns), UNDER_MAX_DROP_M, 0.0)
     arcs = np.array([c[1] for c in cr], np.float64)
 
     def joined_at(end, own=None):
@@ -1900,7 +1994,7 @@ def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=(
     joined = (joined_at(line[0]), joined_at(line[-1]))
     # (not a junction at an abutment; at a joint with the chain's next part the crossing is mid-bridge: Commerce
     # Street's bridge over I-95 in Springfield VA, split 2 m from where the motorway passes under, GitHub #138)
-    rail = np.arange(len(cr)) >= nr
+    rail = np.arange(len(cr)) >= ns
     under = ((arcs >= APPROACH_MIN_CROSS_M) | joined[0]) & ((arcs <= s[-1] - APPROACH_MIN_CROSS_M) | joined[1]) | rail
     zu, arcs, rail = zu[under], arcs[under], rail[under]
     pts = np.array([c[2] for c in cr], np.float64)[under].reshape(-1, 2)
@@ -1909,26 +2003,29 @@ def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=(
     # (a road meeting a part's free end is a junction at grade there, as for the line itself: the trunk's own next
     # carriageway at the far abutment of its chain counted as a road under it and raised a residential bridge joined
     # to the chain 9.7 m, the trunk deck climbing 10 m in 20 m to it, US-24 near Buena Vista CO, 2026-10-27)
-    more = []
+    more, drop = [], []
     for part in (chain or ()):
         part = np.asarray(part, np.float64)[:, :2]
         sp = float(np.hypot(*np.diff(part, axis=0).T).sum())
         pj = (joined_at(part[0], part), joined_at(part[-1], part))
-        for c in roadsmod._crossings([part], list(ground_lines)):
-            a = float(c[1])
-            if (a >= APPROACH_MIN_CROSS_M or pj[0]) and (a <= sp - APPROACH_MIN_CROSS_M or pj[1]):
-                more.append(np.asarray(c[2], np.float64))
+        for lines_, dr in ((ground_lines, 0.0), (sunk_lines, UNDER_MAX_DROP_M)):
+            for c in roadsmod._crossings([part], list(lines_)) if lines_ else ():
+                a = float(c[1])
+                if (a >= APPROACH_MIN_CROSS_M or pj[0]) and (a <= sp - APPROACH_MIN_CROSS_M or pj[1]):
+                    more.append(np.asarray(c[2], np.float64))
+                    drop.append(dr)
         for c in roadsmod._crossings([part], list(rail_lines)) if rail_lines else ():
             more.append(np.asarray(c[2], np.float64))
+            drop.append(0.0)
     if more:
         mp = np.array(more, np.float64)
-        zu = np.r_[zu, z_at(mp)]
+        zu = np.r_[zu, z_at(mp) - np.array(drop, np.float64)]
         pts = np.r_[pts, mp]
         rail = np.r_[rail, np.zeros(len(mp), bool)]
     if not len(zu):
         return []
     out = []
-    for (end, at), jn in zip(((line[0], 0.0), (line[-1], s[-1])), joined):
+    for (end, at, ze), jn in zip(((line[0], 0.0, end_z[0]), (line[-1], s[-1], end_z[1])), joined):
         if jn:
             continue
         d = np.r_[np.abs(arcs - at), np.hypot(*(pts[len(arcs):] - end).T)] if more else np.abs(arcs - at)
@@ -1938,7 +2035,7 @@ def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=(
         d, zu_e = d[far], zu[far]
         need = zu_e + roadsmod.DECK_ROAD_CLEAR + APPROACH_MARGIN_M \
             - roadsmod.DECK_GRADE * np.maximum(d - APPROACH_FLAT_M, 0.0)
-        lift = float(need.max() - z_at(end[None])[0])
+        lift = float(need.max() - (z_at(end[None])[0] if ze is None else ze))
         if lift >= APPROACH_MIN_LIFT:
             out.append((np.asarray(end, np.float64), min(lift, APPROACH_MAX_LIFT)))
     return out
@@ -1956,6 +2053,17 @@ def fill_abutment(z, at_end, step=PROFILE_STEP):
     if far.sum() < 4:
         return z
     b, a = np.polyfit(d[far], p[far], 1)
+    # (the stretch's own samples still on the cutting's slope left out and the grade fitted again on the rest: the
+    # DEM smooths a city trench's wall into a 1:3 slope, and a 22 m street part ending on 11th Avenue's bridge over
+    # Brooklyn's Prospect Expressway had the stretch on the slope's top and fitted the slope, no fill: the street
+    # sagged 4 m into the trench at the abutment, 2026-10-29)
+    steep = np.zeros(len(p), bool)
+    steep[1:] = np.diff(p) / step > b + ABUT_STEEP
+    k = np.flatnonzero(steep & far)
+    if len(k):
+        rest = far & (d > d[k.max()])
+        if rest.sum() >= 4:
+            b, a = np.polyfit(d[rest], p[rest], 1)
     n = int((d < ABUT_NEAR_M).sum())
     e = a + b * d[:n]
     if e[0] - p[0] < ABUT_MIN_M or (np.diff(p[:n + 1]) / step - b).max() < ABUT_STEEP:
@@ -1963,6 +2071,70 @@ def fill_abutment(z, at_end, step=PROFILE_STEP):
     q = p.copy()
     q[:n] = np.minimum(np.maximum(p[:n], e), p[:n] + ABUT_MAX_M)
     return q[::-1] if at_end else q
+
+
+def _goes_on(line, at_end, lines, reach):
+    """The first reach m of the road that goes on from line's end (at_end: its last point, else its first) among lines
+    (k, 2): one whose end is within CHAIN_JOIN_M of it, turning at most CHAIN_TURN_DEG there (as the chain extensions,
+    Grader._extensions, take it), from the node outward; None when none does. Pure."""
+    line = np.asarray(line, np.float64)[:, :2]
+    inward = line[::-1] if at_end else line
+    node = inward[0]
+    d0 = node - _point_along(inward, CHAIN_LOOK_M)      # (the way the road goes on out of this end)
+    best, best_turn = None, CHAIN_TURN_DEG
+    for other in lines:
+        other = np.asarray(other, np.float64)[:, :2]
+        if len(other) < 2 or (len(other) == len(line) and np.array_equal(other, line)):
+            continue
+        for out in (other, other[::-1]):
+            if np.hypot(*(out[0] - node)) > CHAIN_JOIN_M:
+                continue
+            d1 = _point_along(out, CHAIN_LOOK_M) - out[0]
+            cosang = float(np.dot(d0, d1)) / max(float(np.hypot(*d0) * np.hypot(*d1)), 1e-9)
+            turn = math.degrees(math.acos(max(-1.0, min(1.0, cosang))))
+            if turn <= best_turn:
+                best, best_turn = out, turn
+    if best is None:
+        return None
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(best, axis=0).T))]
+    k = int(np.searchsorted(s, reach))
+    if k < len(s):
+        p = np.array([np.interp(reach, s, best[:, 0]), np.interp(reach, s, best[:, 1])])
+        return np.vstack([best[:k], p[None]])
+    return best
+
+
+def abutment_height(end, approaches, z_at, lines=()):
+    """m: the ground at a bridge end (xy (2,)) as the plans of the roads leading onto it (approaches: lines (k, 2),
+    an end within APPROACH_TOUCH_M of it) have it: the DEM there or, higher, the fill of the approach's last
+    ABUT_NEAR_M (fill_abutment, as plan_roads applies it to the part with the road it goes on in past its other end:
+    lines, the ground roads around, _goes_on). The DEM at a bridge's end is the cutting's slope where the map's
+    bridge range stops short of the real abutment, or the DEM smooths the trench's wall into a slope (11th Avenue
+    over Brooklyn's Prospect Expressway: 31.6 m at the bridge's end where the street is 38.7 m, 2026-10-29): on it
+    the ramps lifted a street already filled, 7 m into a hump, and the underpass dip dug the expressway 5 m deeper
+    than the deck needed. z_at(xy (n, 2)) -> ground m. Pure given z_at."""
+    end = np.asarray(end, np.float64)[:2]
+    best = float(z_at(end[None])[0])
+    if not ABUT_FILL_ON:
+        return best
+    for line in approaches:
+        line = np.asarray(line, np.float64)[:, :2]
+        if len(line) < 2:
+            continue
+        at_end = bool(np.hypot(*(line[-1] - end)) <= np.hypot(*(line[0] - end)))
+        on = _goes_on(line, not at_end, lines, ABUT_FAR_M + PROFILE_STEP) if lines else None
+        if on is not None:
+            line = np.vstack([line, on[1:]]) if at_end else np.vstack([on[1:][::-1], line])
+        length = float(np.hypot(*np.diff(line, axis=0).T).sum())
+        if length <= 0:
+            continue
+        step = length / max(1, math.ceil(length / PROFILE_STEP - 1e-9)) * (1.0 + 1e-9)     # (plan_roads' step)
+        xy, _ = resample(line, step)
+        if len(xy) < 2:
+            continue
+        z = fill_abutment(np.asarray(z_at(xy), np.float64), at_end, step)
+        best = max(best, float(z[-1] if at_end else z[0]))
+    return best
 
 
 def underpass_offsets(lines, requirements, queries=None):
@@ -2072,6 +2244,15 @@ def _never_raised(spec):
     dropped beside its mainline while they still overlapped, and an AI car drove into the mainline's parapet trying to
     take the exit (US-101's exit 1E over the Los Angeles River, 2026-10-27)."""
     return spec.cls in APPROACH_SKIP and not _is_link(spec)
+
+
+def gives_way(spec):
+    """A ground road lowered under a street's bridge before the street's ramps are raised (TOWN_CUT_ON): a motorway or
+    trunk, or one of their links (the ramps in the same trench: a deck clearing the mainline still rose for them), in
+    town, where its cutting is walled in concrete to the full depth (_town_walls, WALL_MAX_H_CITY_M), with the
+    underpass dips on (UNDER_ON, UNDER_ANY_ON: the dip is theirs; without them the ramps rise as before)."""
+    return (TOWN_CUT_ON and UNDER_ON and UNDER_ANY_ON and spec is not None and spec.cls in APPROACH_SKIP
+            and bool(spec.urban))
 
 
 class GradedDem:
