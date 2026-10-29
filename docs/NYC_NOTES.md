@@ -76,10 +76,28 @@ To do, in order:
    at one or two non-NYC urban motorways with street overpasses (Commerce St over I-95, Springfield VA, upstream #138;
    I-95 by Canton, Baltimore): grade, curvature, dip depth and street lifts with the cut off vs on. No dip a motorway
    didn't need.
-3. Put approach_check's real output in this file; drop the numbers that didn't reproduce.
+3. **Roads connect and make sense** (the user, 2026-10-29: "ensure that roads connect properly and make sense"). Every
+   fix here moves road heights, so check the whole network around it, not only the deck you fixed. Write
+   `tools/nyc/connect_check.py` (graded ground and solved decks as approach_check builds them, same `--at` / `--bbox`)
+   and report, off vs on:
+   - **junctions:** at every node two or more ground roads share (`junctions.NODE_TOL`), the spread of their graded
+     heights: no step at an intersection (target <= 5 cm);
+   - **deck to street:** the step where a deck meets its approach (approach_check's street - deck at 2 m: <= 5 cm), and
+     no deck end left in the air or buried (a free end with no ground road within `APPROACH_TOUCH_M`);
+   - **ramps:** motorway links meet their mainline at its height and grade (no step, no kink over 2 %);
+   - **divided roads:** paired one-way carriageways (and a street's two halves around a median) at about the same height
+     side by side, unless the DEM says otherwise;
+   - **made-up hills:** street grades the DEM doesn't have (graded grade over the DEM's own + 2 %), and city-street
+     curvature over 20 m above 0.01 /m (~0.12 g at 40 km/h);
+   - **nothing dropped:** every map road's ground part still drawn in the road tiles (`roads.build_tile` carriageways vs
+     `roads.ground_parts`), joined where the map joins them (chunk ends within 0.5 m), no road through a building or
+     under the trench wall.
+   List each failure with the street names and lat/lon so the user can drive there.
+4. Put approach_check's and connect_check's real output in this file; drop the numbers that didn't reproduce.
 
 Done when: no city street (residential .. primary) over the Prospect Expressway lifts more than 1 m at 12 m past a free
-deck end; the expressway stays within 7.7 % and 0.003 /m; no regression in the other cities; tests pass.
+deck end; the expressway stays within 7.7 % and 0.003 /m; connect_check finds no new failure against main (and the old
+ones are listed); no regression in the other cities; tests pass.
 
 ## Open problems (ranked by how much they hurt driving)
 
