@@ -793,6 +793,22 @@ class AbutmentGapTest(unittest.TestCase):
         self.assertFalse(grading.Grader(FRAME, FakeMD(j), dem)._end_wide(end))
 
 
+class AbandonedRailBridgeTest(unittest.TestCase):
+    def test_a_road_under_an_abandoned_lines_bridge_does_not_dip(self):
+        """A street under a railway's bridge whose ends' ground is the street's (the DEM has no viaduct): under a line in
+        use it dips to the clearance, under an abandoned one it stays (Brooklyn's Jay Street Connecting Railroad in
+        DUMBO: Adams and York Streets dug 7 m under its 117 m bridge piece, 2026-10-29)."""
+        def heights(flags):
+            f = features([[(-300, 0), (300, 0)], [(0, -60), (0, 60)]], ["residential", "standard_gauge"],
+                         subtypes=["road", "rail"])
+            f.rules["flags"] = rules(flags)
+            g = grading.Grader(FRAME, FakeMD(f), lambda la, lo: np.full(np.shape(la), 10.0))
+            la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0]), np.array([0.0]), 0.0)
+            return float(g.apply(la, lo, np.full(1, 10.0))[0])
+        self.assertLess(heights([(1, "is_bridge")]), 10.0 - 0.6 * grading.UNDER_CLEAR_M, "in use: the street dips")
+        self.assertAlmostEqual(heights([(1, "is_bridge"), (1, "is_abandoned")]), 10.0, delta=0.1, msg="abandoned: stays")
+
+
 class RacewayKeepTest(unittest.TestCase):
     def test_track_surface_is_the_terrain(self):
         """A road crossing a racetrack at grade: on the track (its carriageway + margin) the terrain stays as it is

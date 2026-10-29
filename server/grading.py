@@ -1456,9 +1456,15 @@ class Grader:
             import railways
             sub, rcls = f.attrs["subtype"], f.attrs.get("class")
             for i in range(len(f)):
-                if str(sub[i]) != "rail" or railways.drawn(f, i) is None:
+                dr = railways.drawn(f, i) if str(sub[i]) == "rail" else None
+                if dr is None:
                     continue
                 for kind, rings in railways._pieces(f, i):
+                    if kind == "bridge" and dr[1] >= 2:
+                        # (an abandoned line's: no train, no clearance owed. Brooklyn's Jay Street Connecting Railroad
+                        # has a 117 m bridge piece whose ends' ground is the street's: Adams and York Streets in DUMBO
+                        # were dug 7 m under it, 2026-10-29)
+                        continue
                     if kind == "bridge":
                         rail += [np.asarray(r, np.float64) for r in rings if len(r) >= 2]
                     elif kind == "ground" and ground:
