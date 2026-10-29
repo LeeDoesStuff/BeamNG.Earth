@@ -912,16 +912,10 @@ PORTAL_EXTEND_MAX_M = 25.0  # going on straight up to this far past the mapped e
                             # portal face stood across the E6's lanes in Norway, GitHub #2)
 PORTAL_JOIN_M = 1.5         # a road this near a tunnel's end meets it there (a garage ramp ending in a street), not over it
 UNDERPASS_MAX_M = 80.0      # only tunnel parts this short (an underpass) under roads of PORTAL_CLASSES are carried on
-# (and a city's streets: OpenStreetMap's East Burnside Avenue underpass in the Bronx ends ~10 m past the Grand
-# Concourse's service roads (tertiary), inside their graded ground: its floor at the portals came out at the blended
-# 25.7 m over the cut's 24 m, 3.8 m under the Concourse, so it was graded as an open road and dug the service roads
-# 1.7 m down where they cross it, connect_check, 2026-10-29)
-PORTAL_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified",
-                  "living_street"}
-PORTAL_ON_CLASSES = {"motorway", "trunk", "primary", "secondary"}   # ... the roads a portal is carried past its own
-# road's end for (onto the road joined there, straight); for a city street over it, never past that end: straight on
-# past East 175th Street's node with Morris Avenue under the Grand Concourse (the street turning there), the tube left
-# the road and its end stood in the block 8 m off the junction (connect_check, 2026-10-29)
+# (not a city street's: carried for the Grand Concourse's service roads in the Bronx, East Burnside Avenue's underpass
+# cleared them, but East 175th Street's was carried 8 m back over its own approach, where its ground part climbs the
+# DEM's smoothed wall: a 3.9 m wall in it, and Tremont Avenue's grew 0.4 -> 1.2 m; connect_check, 2026-10-29)
+PORTAL_CLASSES = {"motorway", "trunk", "primary", "secondary"}
 
 
 def _clear_portals(feats, i, parts):
@@ -979,7 +973,7 @@ def _clear_end(feats, i, rs, ring, at_start, half):
     d = -q / max(float(np.hypot(*q)), 1e-9)                            # out of the tunnel
     nrm = np.array([-d[1], d[0]])
     reach = (half + PORTAL_EXTEND_MAX_M + 40.0) / ky                   # roads that could matter, in degrees
-    roads_m, city = [], False
+    roads_m = []
     for j in range(len(feats)):
         if j == i or rs[j] is None or rs[j].cls not in PORTAL_CLASSES:
             continue
@@ -994,7 +988,6 @@ def _clear_end(feats, i, rs, ring, at_start, half):
             if float(np.hypot(*(a_ + t_[:, None] * d_).T).min()) < PORTAL_JOIN_M or not _crosses(m, gm):
                 continue                        # joined here (an end at it or a T junction) / not over the tunnel
             hw = rs[j].width / 2
-            city = city or rs[j].cls not in PORTAL_ON_CLASSES
             # (its ground graded out to the plan's half width, a town street's with its parking: grading._plan)
             gw = max(rs[j].width, carriageway(rs[j].cls, rs[j].kind, True, None, rs[j].oneway)) / 2 \
                 + grading.shoulder(rs[j]) if rs[j].kind in BUILT else hw
@@ -1013,14 +1006,7 @@ def _clear_end(feats, i, rs, ring, at_start, half):
         return True
     if not roads_m or clear(np.zeros(2)):
         return ring
-    left = PORTAL_EXTEND_MAX_M
-    whole = [np.asarray(r, np.float64) for part in feats.parts(i) for r in part if len(r) >= 2]
-    if city and whole:                  # (a city street to clear: not past the road's own end, PORTAL_ON_CLASSES)
-        wm = (whole[0] - p0) * [kx, ky]
-        ws = np.r_[0.0, np.cumsum(np.hypot(*np.diff(wm, axis=0).T))]
-        at = float(ws[int(np.argmin(np.hypot(*wm.T)))])
-        left = min(left, (at if at_start else ws[-1] - at) - PORTAL_JOIN_M)
-    for ext in np.arange(1.0, left + 1e-6, 1.0):
+    for ext in np.arange(1.0, PORTAL_EXTEND_MAX_M + 1e-6, 1.0):
         if clear(d * ext):
             k = max(1, int(math.ceil(ext / 4.0)))
             add = np.array([d * ext * (t / k) for t in range(1, k + 1)]) / [kx, ky] + p0

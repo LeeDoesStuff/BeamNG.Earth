@@ -325,29 +325,16 @@ class PortalClearTest(unittest.TestCase):
         self.assertLessEqual(b[1], 7.0 + roads.PORTAL_EXTEND_MAX_M + 0.1)
         self.assertAlmostEqual(b[0], 0.0, delta=0.1, msg="straight on")
 
-    def test_end_under_a_town_street_carried_past_its_graded_ground(self):
-        """A short underpass ending under a city street (tertiary: the Grand Concourse's service roads over East
-        Burnside Avenue's underpass in the Bronx, 2026-10-29): the portal is carried past the street's graded ground,
-        a town street's width with its parking and shoulder (grading._plan), not only its bare carriageway: inside it
-        the floor at the portal was the street's height, the tube too shallow and graded as an open cut through it."""
-        from test_roads import features, rules, LAT, LON, M_LAT, M_LON
-        f = features([[(0, -40), (0, 7), (0, 60)], [(-200, 0), (200, 0)]], ["secondary", "tertiary"])
-        f.rules["flags"] = rules([(0, "is_tunnel", 0.0, 0.47)])      # (the tunnel to y = 7, the street on to 60)
-        (a, b), = [[((p[0] - LON) * M_LON, (p[1] - LAT) * M_LAT) for p in (r[0], r[-1])] for r in roads.tunnel_parts(f, 0)]
-        sp = roads.road_specs(features([[(-200, 0), (200, 0)]], ["tertiary"]))[0]
-        reach = roads.carriageway("tertiary", "paved", True, None, sp.oneway) / 2 + grading.shoulder(sp) + grading.T_MAX
-        self.assertAlmostEqual(a[1], -40.0, delta=0.1, msg="the far end stays")
-        self.assertGreaterEqual(b[1], reach - 0.1, "past the street's graded ground")
-        self.assertAlmostEqual(b[0], 0.0, delta=0.1, msg="straight on")
-
-    def test_not_carried_past_its_own_end_for_a_city_street(self):
-        """A street's underpass mapped to the street's end (East 175th Street under the Grand Concourse, its node with
-        Morris Avenue, which turns away, 2026-10-29), a city street over its end: the portal stays (straight on, it
-        left the road 8 m into the block); under a major road it is carried on as before."""
-        (a, b), = self.ends([[(0, -40), (0, 7)], [(-200, 0), (200, 0)]], ["secondary", "tertiary"], [(0, "is_tunnel")])
-        self.assertAlmostEqual(b[1], 7.0, delta=0.1, msg="the street's own end: stays")
-        (a, b), = self.ends([[(0, -40), (0, 7)], [(-200, 0), (200, 0)]], ["secondary", "trunk"], [(0, "is_tunnel")])
-        self.assertGreater(b[1], 7.5, "under a trunk: carried on onto the road beyond")
+    def test_end_under_a_major_town_road_carried_past_its_graded_ground(self):
+        """The portal is carried past the road's graded ground as the grading has it: a town road's width with its
+        shoulder (grading._plan), not only its bare carriageway (inside it the floor at the portal is the road's
+        height, the tube too shallow and graded as an open cut through it: East Burnside Avenue's underpass under the
+        Grand Concourse in the Bronx, 2026-10-29)."""
+        (a, b), = self.ends([[(0, -40), (0, 7)], [(-200, 0), (200, 0)]], ["service", "secondary"], [(0, "is_tunnel")])
+        sp = roads.road_specs(__import__("test_roads").features([[(-200, 0), (200, 0)]], ["secondary"]))[0]
+        reach = max(sp.width, roads.carriageway("secondary", "paved", True, None, sp.oneway)) / 2 \
+            + grading.shoulder(sp) + grading.T_MAX
+        self.assertGreaterEqual(b[1], reach - 0.1, "past the road's graded ground")
 
     def test_road_beside_it_not_over_it(self):
         (a, b), = self.ends([[(0, -60), (0, -10)], [(8, -100), (8, 100)]], ["service", "trunk"], [(0, "is_tunnel")])
