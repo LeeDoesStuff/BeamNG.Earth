@@ -1256,6 +1256,17 @@ class TunnelUnderDeckTest(unittest.TestCase):
         self.assertEqual(roads._bridge_reach(tunnel, 0)["over"], want)
 
 
+class RailUnderDeckTest(unittest.TestCase):
+    def test_a_deck_reaches_over_a_track_under_it(self):
+        """A street's short bridge over a railway (4th Avenue over the LIRR's Bay Ridge cut in Brooklyn, 2026-10-29): the
+        deck is lengthened over the track's bed as over a road (_bridge_reach), not left ending at its edge."""
+        lines = [[(0, -6), (0, 6)], [(-400, 0), (400, 0)]]
+        f = features(lines, ["tertiary", "standard_gauge"], flags=[(0, "is_bridge")], subtypes=["road", "rail"])
+        self.assertGreater(min(roads._bridge_reach(f, 0)["over"]), 1.0)
+        bare = features(lines[:1], ["tertiary"], flags=[(0, "is_bridge")])
+        self.assertEqual(roads._bridge_reach(bare, 0)["over"], [0.0, 0.0], "nothing under it: as mapped")
+
+
 class HomeCopyTest(unittest.TestCase):
     def test_a_features_copies_take_its_home_cells_ranges(self):
         """A street joined to a short bridge over a motorway, in two cells' maps: the one its bbox centre lies in (its

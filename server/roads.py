@@ -402,6 +402,7 @@ def _cell_ranges(feats, load_only=False):
 # abutment slope of SKEW_SLOPE_M either side: (lower half width + margin + slope) / sin + upper half width / tan of
 # the angle between them, at most SKEW_MAX_M more per end (onto the road joined there: _skew_decks).
 SKEW_ON = os.environ.get("BNE_SKEW_DECKS", "on") != "off"
+SKEW_RAIL_HALF_M = 3.0     # m: a track's graded bed's half width (railways.GRADE_HALF_M), as a lower road's
 SKEW_MARGIN_M = 1.5         # m past the lower road's carriageway edge kept level (its shoulder)
 SKEW_SLOPE_M = 6.0          # m for the abutment's slope up to the upper road, under the deck
 SKEW_MAX_M = 30.0           # m a bridge range grows at most at each end
@@ -554,7 +555,17 @@ def _bridge_reach_calc(feats, i, memo):
                                   (boxes[:, 3] >= blo[1]))
             gl, gj = [], []
             for j in near:
-                if j == i or (specs[j] is None and tspecs[j] is None):
+                if j == i:
+                    continue
+                if specs[j] is None and tspecs[j] is None:
+                    if not _rail_drawn(feats, j):
+                        continue
+                    # (and a drawn railway's track under it, its bed's width: 4th Avenue's deck over the LIRR's Bay
+                    # Ridge cut in Brooklyn ended 4 m off the track, its abutment on the cut's graded slope, a 2.8 m
+                    # drop onto the deck once the street was filled to it, connect_check, 2026-10-29)
+                    for g in _raw_ground_parts(feats, j):
+                        gl.append((np.asarray(g, np.float64) - ring[0]) * [kx, ky])
+                        gj.append(j)
                     continue
                 for g in (_raw_ground_parts(feats, j) if specs[j] is not None else []) + _raw_short_tunnels(feats, j):
                     gl.append((np.asarray(g, np.float64) - ring[0]) * [kx, ky])
@@ -567,7 +578,8 @@ def _bridge_reach_calc(feats, i, memo):
                 j = gj[g]
                 sin = max(sin, SKEW_MIN_SIN)
                 cos = math.sqrt(max(0.0, 1.0 - sin * sin))
-                lw = (specs[j] if specs[j] is not None else tspecs[j]).width
+                lw = (specs[j].width if specs[j] is not None else tspecs[j].width if tspecs[j] is not None
+                      else 2.0 * SKEW_RAIL_HALF_M)
                 h = (lw / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin + (up_w / 2) * cos / sin
                 lo_m = min(lo_m, max(a0 * L - SKEW_MAX_M, sc - h))
                 hi_m = max(hi_m, min(b0 * L + SKEW_MAX_M, sc + h))
