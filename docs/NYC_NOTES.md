@@ -42,6 +42,45 @@ Not yet tested in game (user testing as of 2026-10-28; the town-cut fixes of 202
 the ends level with the street. Two chains in the cell log `bridge clearance below 4.9 m target`: Seeley Street
 (`d3a5ba33`, 4.54 m) and `0d19bc63` (4.79 m) — the deck solver's own abutment/grade limits, a semi (4.1 m) still passes.
 
+## NEXT: humps over the Prospect Expressway — reopened after review (2026-10-29)
+
+Review of commit `2430373` on real data (Windows, same cache layout): tests pass (391, both road modes); the expressway
+drives fine (max grade 7.7 %, off 7.0 %; curvature over 20 m <= 0.0025 /m, ~0.12 g at 80 km/h). But the street ramps
+are only partly gone, and the numbers in the table above / the commit message did not reproduce (11th Ave decks
+37.8-39.5 m, not 36.8-37.6). Keep this branch unmerged and commit here.
+
+**Measure with `tools/nyc/approach_check.py`**, not `depth_check.py`: depth_check's "ends against the street 12 m on"
+takes a joint between two deck parts for an end, and its DEM-only depth is not what the game builds (the "5-7 m humps on
+11th Ave" in the old problem 1 was that estimate: graded, 11th Ave was already level on main). approach_check prints,
+for every free deck end, the lift (graded street minus raw DEM) 2/12/40/80/120 m past it, town cut off and on, and the
+expressway's profile. Lift at 2 m alone is the abutment fill over the DEM's smoothed wall; at 12 m and on, a ramp.
+Second anchor: `--at 40.66556,-73.99318 --bbox 40.655,-74.005,40.675,-73.982` (there: only motorway links and service
+roads lift, as expected).
+
+Lift at 2 / 12 / 40 m, main -> this branch:
+
+| Street (fid) | main | branch |
+|---|---|---|
+| 11th Ave (5a6d064d, 729d02a3, cc59f431) | ~0 from 12 m | same, decks 0.4-0.7 m lower |
+| Seeley St (d3a5ba33, west end) | sag, street 8 m over the deck | fixed |
+| Seeley St (ad9c961c, end 1) | 5.2 / 4.3 / 3.6 | 3.8 / 2.9 / 1.8 — **identical with the town cut off**: not reached by it |
+| Seeley St (ad9c961c, end 2) | 2.9 / 2.9 / 2.0 | unchanged |
+| Fort Hamilton Pkwy (ddcfd6f2) | 5.6 / 2.8 / -0.4 | 3.5 / 1.3 / -0.3 |
+| Caton Ave (0d19bc63) | ~0 | ~0 |
+
+To do, in order:
+1. Find *why* the town cut misses Seeley St (ad9c961c) and only half-fixes Fort Hamilton Pkwy — check `gives_way` of the
+   ground parts under them, don't assume. Likely open problem 6 (the parts beside Prospect Park count as rural): then fix
+   the urban classification, not the dip.
+2. Other cities: `gives_way` applies to every urban motorway/trunk. Run approach_check (`--at`, `--bbox`, `--motorway`)
+   at one or two non-NYC urban motorways with street overpasses (Commerce St over I-95, Springfield VA, upstream #138;
+   I-95 by Canton, Baltimore): grade, curvature, dip depth and street lifts with the cut off vs on. No dip a motorway
+   didn't need.
+3. Put approach_check's real output in this file; drop the numbers that didn't reproduce.
+
+Done when: no city street (residential .. primary) over the Prospect Expressway lifts more than 1 m at 12 m past a free
+deck end; the expressway stays within 7.7 % and 0.003 /m; no regression in the other cities; tests pass.
+
 ## Open problems (ranked by how much they hurt driving)
 
 1. **Open-cut subways not modelled.** IND Culver Line by 40.64780,-73.97558: `osm_railway=subway` is excluded
