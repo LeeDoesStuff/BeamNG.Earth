@@ -729,6 +729,30 @@ class ExtensionFillTest(unittest.TestCase):
         self.assertAlmostEqual(float(filled.z[-1]), 10.0, delta=0.05)
 
 
+class TunnelWallTest(unittest.TestCase):
+    def test_a_town_trenchs_open_tunnel_section_is_walled_as_its_road(self):
+        """A motorway in a town trench, mapped with a short tunnel under a street (the BQE in Williamsburg under each
+        cross street): the tunnel's open section and mouths are walled as the road's own ground parts are (the
+        cuttings' walls, a town's concrete height), not graded out on an earth slope to the streets beside the trench
+        (Division Avenue's abutment pulled 2.6 m down 7 m from the BQE's mouth, 2026-10-29)."""
+        f = features([[(-400, 0), (400, 0)]], ["motorway"])
+        f.rules["flags"] = rules([(0, "is_tunnel", 0.48, 0.52)])
+
+        def trench(la, lo):
+            _e, n, _ = FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), 0.0)
+            return np.where(np.abs(np.asarray(n)) < 9.0, 0.0, 8.0)
+        g = grading.Grader(FRAME, FakeMD(f), trench, urban=lambda la, lo: np.ones(np.shape(la), bool))
+        plans = g._cell_plans(mapcells.cell_of(LAT, LON))
+        tun = [p for fp, p in plans if grading.TUNNEL_TAG in fp]
+        ground = [p for fp, p in plans if grading.TUNNEL_TAG not in fp]
+        self.assertTrue(tun and ground)
+        for p in tun:
+            self.assertEqual(p.max_wall, grading.WALL_MAX_H_CITY_M)
+            self.assertEqual(p.max_wall, ground[0].max_wall)
+            self.assertIsNotNone(p.cut, "its cutting's walls")
+            self.assertLess(p.road_half, p.half, "the carriageway's half, not the shoulder's")
+
+
 class RacewayKeepTest(unittest.TestCase):
     def test_track_surface_is_the_terrain(self):
         """A road crossing a racetrack at grade: on the track (its carriageway + margin) the terrain stays as it is

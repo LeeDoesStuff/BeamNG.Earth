@@ -739,9 +739,10 @@ class Grader:
                     tplans.extend((fid, q) for q in (pieces if cl else [p]))
                 plans = kept
             secs = self._tunnel_sections(feats, key, [p for _f, p in tplans])
-            plans.extend((fid + TUNNEL_TAG, Plan(xy, z, spec.width / 2 + shoulder(spec)))
-                         for fid, spec, xy, z, k in secs if k == 0)
-            plans.extend(self._mouth_plans(secs))
+            tun = [(fid + TUNNEL_TAG, Plan(xy, z, spec.width / 2 + shoulder(spec), road_half=spec.width / 2))
+                   for fid, spec, xy, z, k in secs if k == 0] + self._mouth_plans(secs)
+            self._tunnel_walls(feats, specs, tun)
+            plans.extend(tun)
             covers = [(xy, spec.width / 2 + TUNNEL_KEEP_M) for _f, spec, xy, _z, k in _twin_trimmed(secs) if k]
             opens = [(xy, spec) for _f, spec, xy, _z, k in secs if k == 0]
         else:
@@ -1627,8 +1628,41 @@ class Grader:
                 else:
                     pxy, pzz = np.r_[p[None], xy[m]], np.r_[pz, z[m]]
                 if len(pxy) >= 2:
-                    out.append((fid + TUNNEL_TAG + ("m0" if at_start else "m1"), Plan(pxy, pzz, hw)))
+                    out.append((fid + TUNNEL_TAG + ("m0" if at_start else "m1"),
+                                Plan(pxy, pzz, hw, road_half=spec.width / 2)))
         return out
+
+    def _tunnel_walls(self, feats, specs, tun):
+        """The tunnels' open sections and mouths' plans (tun: [(name, Plan)]) walled as the road's own ground parts are:
+        its cuttings' walls (_add_cuts) as tall as its class has them in town (wall_max_h of its spec, specs: the
+        cell's road_specs with _town_walls' urban; a road all in tunnels has none: the land cover at the plan). Without,
+        the floor of a motorway's trench mapped as a run of short tunnels (the BQE in Williamsburg under every cross
+        street) was graded out to the streets on an earth slope: Division Avenue's abutment over it was pulled from its
+        street's 15.5 m to 12.9 m 7 m from the tunnel's mouth, a 2.6 m ramp in 4 m onto its deck (connect_check,
+        2026-10-29)."""
+        if not tun:
+            return
+        by = {str(feats.ids[i]): sp for i, sp in enumerate(specs) if sp is not None}
+        ts = roadsmod.tunnel_specs(feats)
+        tby = {str(feats.ids[i]): sp for i, sp in enumerate(ts) if sp is not None}
+        for name, p in tun:
+            fid = name.split(TUNNEL_TAG)[0]
+            sp = by.get(fid)
+            if sp is None and self.urban is not None and fid in tby and tby[fid].cls in roadsmod.CONCRETE_WALL_CLASSES:
+                la, lo, _ = self.frame.enu_to_geodetic(p.xy[:, 0], p.xy[:, 1], 0.0)
+                try:
+                    town = float(np.mean(np.asarray(self.urban(np.asarray(la), np.asarray(lo)), bool))) \
+                        >= roadsmod.URBAN_SHARE
+                except Exception as e:          # (rural walls rather than no grading)
+                    log.debug("grading: tunnel's town: %s: %s", type(e).__name__, e)
+                    town = False
+                sp = tby[fid]._replace(urban=town)
+            p.max_wall = wall_max_h(sp) if sp is not None else WALL_MAX_H_M
+        if SHARP_ON:
+            try:
+                _add_cuts(self.frame, [p for _n, p in tun], self.elev)
+            except Exception as e:      # (graded on slopes as before rather than no grading)
+                log.debug("grading: tunnels' cuttings: %s: %s", type(e).__name__, e)
 
     def _covered_tunnels(self, feats):
         """[(xy, half width)] of the tunnels' covered sections (not open roads): the grading leaves the ground over

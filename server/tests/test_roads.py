@@ -1242,6 +1242,20 @@ class BridgeReachTest(unittest.TestCase):
         self.assertNotIn("busy", seen["other"])
 
 
+class TunnelUnderDeckTest(unittest.TestCase):
+    def test_a_deck_reaches_over_a_short_tunnel_under_it_as_over_the_ground(self):
+        """A street's short bridge over a motorway whose piece under it is mapped as a short tunnel (the BQE in its
+        Williamsburg trench under Division Avenue, 2026-10-29): the deck is lengthened over the motorway's width as over
+        a road on the ground (_bridge_reach), not left ending over its carriageway."""
+        lines = [[(0, -10), (0, 10)], [(-400, 0), (400, 0)]]
+        ground = features(lines, ["tertiary", "motorway"], flags=[(0, "is_bridge")])
+        tunnel = features(lines, ["tertiary", "motorway"], flags=[(0, "is_bridge")])
+        tunnel.rules["flags"] = rules([(0, "is_bridge"), (1, "is_tunnel", 0.49, 0.51)])
+        want = roads._bridge_reach(ground, 0)["over"]
+        self.assertGreater(min(want), 1.0)
+        self.assertEqual(roads._bridge_reach(tunnel, 0)["over"], want)
+
+
 class HomeCopyTest(unittest.TestCase):
     def test_a_features_copies_take_its_home_cells_ranges(self):
         """A street joined to a short bridge over a motorway, in two cells' maps: the one its bbox centre lies in (its

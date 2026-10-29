@@ -449,6 +449,26 @@ def _raw_ground_parts(feats, j):
     return out
 
 
+def _raw_short_tunnels(feats, j):
+    """Feature j's tunnel pieces from its raw_level_ranges no longer than UNDERPASS_MAX_M: a road in a trench mapped as
+    a short tunnel under each street over it, which a deck over it spans as it does a road on the ground (_bridge_reach:
+    the Brooklyn-Queens Expressway in Williamsburg, a tunnel under Division Avenue's bridge, so the bridge ended over
+    its carriageway, 6.4 m from its centre line: the street's abutment graded down into the trench, 2026-10-29)."""
+    rngs = [(a, b) for a, b, k in raw_level_ranges(feats, j) if k == "tunnel"]
+    if not rngs:
+        return []
+    L = _feature_length_m(feats, j)
+    out = []
+    for a, b in rngs:
+        if (b - a) * L > UNDERPASS_MAX_M or b - a <= MIN_PART:
+            continue
+        for part in feats.parts(j):
+            for ring in part:
+                if len(ring) >= 2:
+                    out.append(ring if (a, b) == (0.0, 1.0) else sub_polyline(ring, a, b))
+    return out
+
+
 def _seg_hits(m, lines):
     """(line index, arc m along polyline m, sin of the angle) where each of the polylines lines (all (k, 2) m) crosses
     m (earthfast.seg_hits). Pure."""
@@ -516,6 +536,7 @@ def _bridge_reach_calc(feats, i, memo):
     if L <= 0:
         return _reach_done(memo, i, rngs, [0.0, 0.0])
     boxes = _feature_boxes(feats)
+    tspecs = tunnel_specs(feats)
     out, over = [], [0.0, 0.0]
     for n, (a, b, k) in enumerate(rngs):
         if k == "bridge":
@@ -533,9 +554,9 @@ def _bridge_reach_calc(feats, i, memo):
                                   (boxes[:, 3] >= blo[1]))
             gl, gj = [], []
             for j in near:
-                if j == i or specs[j] is None:
+                if j == i or (specs[j] is None and tspecs[j] is None):
                     continue
-                for g in _raw_ground_parts(feats, j):
+                for g in (_raw_ground_parts(feats, j) if specs[j] is not None else []) + _raw_short_tunnels(feats, j):
                     gl.append((np.asarray(g, np.float64) - ring[0]) * [kx, ky])
                     gj.append(j)
             lo0, hi0 = lo_m, hi_m           # (arcs along sub: from lo0; a crossing at either end of it does not count)
@@ -546,7 +567,8 @@ def _bridge_reach_calc(feats, i, memo):
                 j = gj[g]
                 sin = max(sin, SKEW_MIN_SIN)
                 cos = math.sqrt(max(0.0, 1.0 - sin * sin))
-                h = (specs[j].width / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin + (up_w / 2) * cos / sin
+                lw = (specs[j] if specs[j] is not None else tspecs[j]).width
+                h = (lw / 2 + SKEW_MARGIN_M + SKEW_SLOPE_M) / sin + (up_w / 2) * cos / sin
                 lo_m = min(lo_m, max(a0 * L - SKEW_MAX_M, sc - h))
                 hi_m = max(hi_m, min(b0 * L + SKEW_MAX_M, sc + h))
             prev = out[-1][1] if out else 0.0   # (never into a neighbouring range; past the feature's ends: "over")
