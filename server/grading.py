@@ -530,8 +530,13 @@ class Grader:
     """The road plans of one anchor frame, per map cell, made once (worker threads; it fetches the road
     cells it lacks)."""
 
-    def __init__(self, frame, mapdata, elev, widths=None):
+    def __init__(self, frame, mapdata, elev, widths=None, urban=None):
         self.frame, self.md, self.elev, self.widths = frame, mapdata, elev, widths
+        # urban(lat, lon) -> bool array (surface.Surface.urban, the road tiles' own) or None: which major roads are in
+        # town, for their cuttings' wall height only (wall_max_h; _town_walls). Without it every plan was rural, so a
+        # city trench (Brooklyn's Prospect Expressway, ~7 m) got a 4 m wall and a graded bank of earth above it under
+        # the road tiles' full-height concrete wall
+        self.urban = urban
         self.cells = {}
         self.failed = {}        # cell key -> monotonic time of the last failed fetch
         self.lock = threading.Lock()
@@ -543,6 +548,19 @@ class Grader:
         self.wet = None         # wet(lat, lon) -> water depth (m): tunnels under water are left out, as
                                 # roads.TunnelProfiles leaves them (their "open" sections graded a dam across the river:
                                 # the Maastunnel's bed raised from -6 m to -0.4 m, storm-ace's GitHub #85)
+
+    def _town_walls(self, feats, specs):
+        """specs with urban set as the road tiles have it (self.urban) on the concrete-wall classes, the only use of
+        urban in a plan (wall_max_h); as they are without self.urban."""
+        if self.urban is None:
+            return specs
+        try:
+            town = roadsmod.road_specs(feats, self.urban, None)
+        except Exception as e:          # rural walls rather than no grading
+            log.debug("grading: town roads: %s: %s", type(e).__name__, e)
+            return specs
+        return [sp._replace(urban=True) if sp is not None and t is not None and t.urban
+                and sp.cls in roadsmod.CONCRETE_WALL_CLASSES else sp for sp, t in zip(specs, town)]
 
     def _cell_plans(self, key):
         with self.lock:
@@ -592,7 +610,7 @@ class Grader:
             return None
         plans = []
         if feats is not None and len(feats):
-            specs = roadsmod.road_specs(feats, None, self.widths)
+            specs = self._town_walls(feats, roadsmod.road_specs(feats, None, self.widths))
             parts, ids, clipped = [], [], []
             box = self._clip_box(key)
             keeps = []

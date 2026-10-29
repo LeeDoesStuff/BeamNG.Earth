@@ -120,9 +120,10 @@ class RulesTest(unittest.TestCase):
         f.attrs["osm_sidewalk"] = np.array(["both", "left", "right", "separate", ""], object)
         town = lambda lat, lon: np.ones(len(lat), bool)                                  # noqa: E731
         s = roads.road_specs(f, urban_fn=town)
-        self.assertEqual([roads.has_sidewalks(sp) for sp in s], [True, True, True, False, True])
+        self.assertEqual([roads.has_sidewalks(sp) for sp in s], [True, True, True, True, True])
         self.assertEqual(roads.walk_sides(s[1]), (1,))
         self.assertEqual(roads.walk_sides(s[2]), (-1,))
+        self.assertEqual(roads.walk_sides(s[3]), (1, -1))                                # separate: the town rule
         self.assertEqual(roads.walk_sides(s[4]), (1, -1))                                # untagged: the town rule
         rural = roads.road_specs(features([[(0, 0), (100, 0)]], ["residential"]))[0]
         self.assertFalse(roads.has_sidewalks(rural))                                     # untagged, rural: none

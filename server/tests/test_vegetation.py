@@ -99,6 +99,20 @@ class VegetationTest(unittest.TestCase):
         self.assertGreater(off, curb - 1.0, "beside the road")
         self.assertLess(off, curb + 3.0)                   # (whole CHM pixels, ~2 m here)
 
+    def test_street_tree_clears_the_drawn_width(self):
+        # a street drawn 20 m wide (its measured width: roads.road_specs), twice its class's: the tree goes past that
+        # curb, not the class's (GitHub #436: trees in the parking lanes of Brooklyn's streets)
+        md = FakeMapData()
+        v = veg.Vegetation(md, None)
+        v._road_specs = lambda f: None if f is None else [SimpleNamespace(width=20.0)] * len(f.kind)
+        it = v.cell(KEY)
+        trees = it.take(it.kind == veg.KIND_TREE)
+        rlon, rlat = md.lonlat(100, 400)                   # on the road's centreline
+        street = np.argmin(np.hypot((trees.lon - rlon) * 85000, (trees.lat - rlat) * 111000))
+        off = abs(trees.lat[street] - rlat) * 111000
+        self.assertGreater(off, 10.0 + veg.TREE_PIT_M + 0.6 - 1.0, "past the drawn curb (10 m from the centre)")
+        self.assertLess(off, 10.0 + veg.TREE_PIT_M + 0.6 + 3.0)
+
     def test_footway_keeps_its_tree(self):
         md = FakeMapData()
         md.cd.layers["roads"].attrs["class"][:] = "footway"   # a sidewalk mapped as a line: street trees stand on it

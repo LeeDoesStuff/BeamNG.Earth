@@ -976,7 +976,10 @@ def layout(st, blds, roads, service=(), style="default"):
 
 # --- the forecourt's asphalt (the user, 2026-10-23: "some stations spawn on dirt because we do not paint ashpat there";
 # "I'd start with the pad and driveway, some driveways are there if caught by OSM but some do not obviously") -------
-PAD_MARGIN_M = 6.0          # around the islands or pumps: room to drive round them
+# ponytail: one margin for every side, cut back to the nearest wall / carriageway (forecourt_pad); a city lot is paved out
+# to its curbs (6 m left dirt and grass on most of a Brooklyn Mobil's lot). A station on open land gets up to this much
+# asphalt past its pumps; the station's own mapped outline (OpenStreetMap amenity=fuel) would be exact where mapped
+PAD_MARGIN_M = 20.0         # around the islands or pumps: room to drive round them, out to the lot's edges
 PAD_BLD_GAP_M = 0.5         # short of a neighbour's walls
 PAD_SHOP_LINK_M = 10.0      # the shop's front this close: the asphalt reaches it
 DRIVEWAY_W_M = 8.0          # a driveway made up where none is mapped ...
@@ -1050,16 +1053,23 @@ def forecourt_pad(site, blds, roads, service=()):
                  if (b.ring.max(0) >= lo_).all() and (b.ring.min(0) <= hi_).all()]
     obstacles += [(_dense(line), h) for line, h in roads
                   if (line.max(0) >= lo_ - h).all() and (line.min(0) <= hi_ + h).all()]
-    for q, gap in obstacles:
-        d = q - c
-        a = np.stack([d @ u, d @ v], axis=1)
-        for ax in (0, 1):
-            other = 1 - ax
-            for sg in (1, -1):
-                beyond = sg * a[:, ax] - half[ax]
-                sel = (beyond > 0) & (np.abs(a[:, other]) <= half[other] + margin[(other, 1)] + gap)
-                if sel.any():
-                    margin[(ax, sg)] = max(0.0, min(margin[(ax, sg)], float(beyond[sel].min()) - gap))
+    # two passes: each side cut back to what stands straight ahead of it, then the corners against the sides as cut
+    # (one pass let a road along one side cut the box's ends short, its points beside the uncut margin)
+    projected = [(np.stack([(q - c) @ u, (q - c) @ v], axis=1), gap) for q, gap in obstacles]
+    for corners in (False, True):
+        for a, gap in projected:
+            for ax in (0, 1):
+                other = 1 - ax
+                if corners:
+                    side = (a[:, other] <= half[other] + margin[(other, 1)] + PAD_BLD_GAP_M) & \
+                        (a[:, other] >= -half[other] - margin[(other, -1)] - PAD_BLD_GAP_M)
+                else:
+                    side = np.abs(a[:, other]) <= half[other]
+                for sg in (1, -1):
+                    beyond = sg * a[:, ax] - half[ax]
+                    sel = (beyond > 0) & side
+                    if sel.any():
+                        margin[(ax, sg)] = max(0.0, min(margin[(ax, sg)], float(beyond[sel].min()) - gap))
     x0, x1 = -hl - margin[(0, -1)], hl + margin[(0, 1)]
     y0, y1 = -hw - margin[(1, -1)], hw + margin[(1, 1)]
     box = np.array([c + u * x + v * y for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])

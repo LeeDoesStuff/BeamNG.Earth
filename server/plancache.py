@@ -66,7 +66,7 @@ def for_grader(cache_dir, grader, widths, wet):
     f = grader.frame
     md = getattr(grader, "md", None)
     pc = PlanCache(os.path.join(cache_dir, "plans", run), f.lat0, f.lon0,
-                   f"w{int(widths is not None)}s{int(wet is not None)}")
+                   f"w{int(widths is not None)}s{int(wet is not None)}u{int(getattr(grader, 'urban', None) is not None)}")
     pc.persist = (cache_dir, (round(float(f.lat0), 7), round(float(f.lon0), 7), pc.signature,
                               md.versions() if md is not None and hasattr(md, "versions") else None))
     return pc

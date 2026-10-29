@@ -85,7 +85,8 @@ class _State:
                 frame = geodesy.EnuFrame(lat, lon)
                 self.chunks[aid] = heightmap.ChunkCache()
                 self.graders[aid] = (gradingmod.Grader(
-                    frame, self.md, lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), self.widths)
+                    frame, self.md, lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM), self.widths,
+                    self.surface.urban if self.surface is not None else None)
                     if self.grading else None)
                 if self.graders[aid] is not None:
                     self.graders[aid].wet = self.sea.depth if getattr(self, "sea", None) is not None else None

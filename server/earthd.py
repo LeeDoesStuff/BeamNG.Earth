@@ -753,6 +753,9 @@ class Server:
             lambda key: mapdata.cell(key, layers=("buildings",), kind="demand").layers.get("buildings"),
             roadwidthmod.store_dir(cache_dir, mapdata)).get
             if road_widths and mapdata is not None else None)
+        if vegetation is not None:      # the trees kept off the carriageways the road tiles draw (vegetation._road_specs)
+            vegetation.urban_fn = surface.urban if surface is not None and hasattr(surface, "urban") else None
+            vegetation.widths = self.road_widths
         self.grader_lock = threading.Lock()
         # The download cache's bookkeeping (cache.py): every producer reports its disk hits and writes
         self.cache = cache
@@ -1421,7 +1424,9 @@ class Server:
             if anchor.grader is None:
                 anchor.grader = gradingmod.Grader(anchor.frame, self.mapdata,
                                                   lambda la, lo: self.dem.sample(la, lo, gradingmod.PROFILE_ZOOM),
-                                                  self.road_widths)
+                                                  self.road_widths,
+                                                  self.surface.urban if self.surface is not None
+                                                  and hasattr(self.surface, "urban") else None)
                 anchor.grader.wet = self.sea.depth if self.sea is not None else None    # (no dams: underwater tunnels)
                 anchor.grader.dem = self.dem                # (its urgent lane: _plan_missing)
                 anchor.grader.shared = plancachemod.for_grader(self.cache_dir, anchor.grader, self.road_widths,

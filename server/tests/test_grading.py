@@ -514,6 +514,23 @@ class WallHeightTest(unittest.TestCase):
         self.assertEqual(grading.wall_max_h(rural), grading.WALL_MAX_H_M)
         self.assertEqual(grading.wall_max_h(street), grading.WALL_MAX_H_M)
 
+    def test_grader_plans_town_walls(self):
+        """The grader's road specs are rural (urban_fn None, its cores never from the land cover); its urban function
+        marks the concrete-wall classes in town, so their plans get the full-height wall (Brooklyn's Prospect
+        Expressway: a 4 m wall and a bank of earth above it under the road tiles' full concrete wall)."""
+        import roads
+        moto = roads.Spec(width=11.0, kind="paved", urban=False, cls="motorway", oneway=True)
+        street = roads.Spec(width=7.0, kind="paved", urban=False, cls="residential", oneway=False)
+        g = grading.Grader(None, None, None)
+        self.assertEqual(g._town_walls("f", [moto, street, None]), [moto, street, None], "no urban function: as they are")
+        g.urban = object()
+        town = [moto._replace(urban=True), street._replace(urban=True), None]
+        with unittest.mock.patch.object(roads, "road_specs", return_value=town):
+            got = g._town_walls("f", [moto, street, None])
+        self.assertEqual([grading.wall_max_h(s) for s in got[:2]], [grading.WALL_MAX_H_CITY_M, grading.WALL_MAX_H_M])
+        self.assertIsNone(got[2])
+        self.assertEqual(got[1], street, "a street keeps its rural spec (its core, its sidewalks)")
+
 
 class UnderpassTest(unittest.TestCase):
     def test_road_dips_under_a_motorway_overpass(self):

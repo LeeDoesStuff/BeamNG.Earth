@@ -648,6 +648,27 @@ class PadTest(unittest.TestCase):
 
     ROOF = rect("roof", 0.0, 22.0, 30.0, 13.0, cls="roof")      # y 15.5 .. 28.5; the road's edge at y = 5
 
+    def setUp(self):
+        # the cases below were written for a 6 m margin (the box, its driveway strips); the city lot's own test sets
+        # its margin
+        self._margin = gs.PAD_MARGIN_M
+        gs.PAD_MARGIN_M = 6.0
+
+    def tearDown(self):
+        gs.PAD_MARGIN_M = self._margin
+
+    def test_city_lot_paved_to_its_curbs(self):
+        # a Brooklyn Mobil (Caton Ave): concrete from the canopy out to both streets; a road along one side cut the
+        # box's ends short when the margin reached it (one clipping pass)
+        gs.PAD_MARGIN_M = 20.0
+        side = [(np.array([(30.0, -300.0), (30.0, 300.0)]), 5.0)]      # a cross street along x = 30, its edge at 25
+        site = gs.layout(STATION, [SHOP, self.ROOF], ROAD + side)
+        self.assertTrue(in_pad(site, 0.0, 7.0), "out to the front street's curb (y = 5)")
+        self.assertTrue(in_pad(site, -30.0, 22.0), "20 m past the canopy's open end")
+        self.assertTrue(in_pad(site, 24.0, 22.0), "out to the cross street's curb (x = 25)")
+        self.assertFalse(in_pad(site, 0.0, 3.0), "not across the front street")
+        self.assertFalse(in_pad(site, 27.0, 22.0), "not across the cross street")
+
     def test_pad_canopy_margin_shop_and_driveway(self):
         site = gs.layout(STATION, [SHOP, self.ROOF], ROAD)
         self.assertTrue(in_pad(site, 0.0, 22.0))

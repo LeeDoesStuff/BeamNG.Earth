@@ -1190,9 +1190,10 @@ def _specs_from(data, n):
         return None
 
 
-# OpenStreetMap's sidewalk tag (osmtags.py) -> walk_sides' sides; "separate" (a footway mapped on its own beside the
-# road) and "no" give none. Other values (or none) leave the class and land-cover rule.
-SIDEWALK_TAG = {"both": (1, -1), "left": (1,), "right": (-1,), "no": (), "none": (), "separate": ()}
+# OpenStreetMap's sidewalk tag (osmtags.py) -> walk_sides' sides; "no" gives none. Other values (or none) leave the
+# class and land-cover rule, "separate" (a footway mapped on its own beside the road) too: footways are never drawn, and
+# as none it left most of New York's streets without curbs, corners or crosswalks (sidewalk=separate city-wide)
+SIDEWALK_TAG = {"both": (1, -1), "left": (1,), "right": (-1,), "no": (), "none": ()}
 
 
 def _osm_sidewalks(feats, specs):
@@ -2636,9 +2637,11 @@ DECK = {"m": "road_asphalt_2lane", "tl": 11.0, "p": 20}      # bridge decks (roa
 DECK_STEP = 4.0         # m between deck profile points
 DECK_CLEAR = 0.05       # m a deck stays above the ground under it (no z-fighting where it rests on it)
 # Usable space below the lowest structural girder, not merely to the road surface.
-# Six metres accommodates tall road vehicles such as semi-trucks; unlimited-height
-# modded vehicles and raised equipment cannot have a finite universal guarantee.
-MIN_BRIDGE_HEADROOM_M = 6.0
+# 4.9 m is the US Interstate design minimum (16 ft; Europe's 4.5-5.1 m), over a ~4.1 m semi-truck; unlimited-height
+# modded vehicles and raised equipment cannot have a finite universal guarantee. (It was 6 m: a deck 8.35 m over the
+# road under it, deeper than a city trench like Brooklyn's Prospect Expressway, so its street overpasses were lifted into
+# humps on earth ramps.) BNE_BRIDGE_HEADROOM: another value, e.g. 6 for the old height
+MIN_BRIDGE_HEADROOM_M = float(os.environ.get("BNE_BRIDGE_HEADROOM", "4.9"))
 BRIDGE_HEADROOM_MARGIN_M = 0.15   # mesh simplification/float and vehicle clearance tolerance
 DECK_ROAD_CLEAR = MIN_BRIDGE_HEADROOM_M + BRIDGE_HEADROOM_MARGIN_M + roadmesh.DECK_DEPTH + roadmesh.GIRDER_D
 DECK_CLEAR_REACH_M = 20.0   # full headroom either side of a road crossing (matches approach fills' flat reach)

@@ -1,7 +1,7 @@
 """Minimum usable headroom: profiles, actual slab/girder mesh, approaches and diagnostics."""
 import os
 import sys
-from unittest import TestCase, mock
+from unittest import TestCase, mock, skipIf
 
 import numpy as np
 
@@ -51,10 +51,11 @@ class MinimumBridgeClearanceTest(TestCase):
             self.assertTrue(np.any(np.isclose(vertices[:, 0], p[0]) & np.isclose(vertices[:, 2], p[2])))
         np.testing.assert_allclose(left[:, 0], right[:, 0])
 
-    def test_default_counts_slab_and_girders_below_six_metres(self):
-        self.assertEqual(roads.MIN_BRIDGE_HEADROOM_M, 6.0)
+    @skipIf(os.environ.get("BNE_BRIDGE_HEADROOM"), "headroom set by BNE_BRIDGE_HEADROOM")
+    def test_default_counts_slab_and_girders_below_sixteen_feet(self):
+        self.assertEqual(roads.MIN_BRIDGE_HEADROOM_M, 4.9)       # (the US Interstate minimum; was 6 m)
         self.assertAlmostEqual(roads.DECK_ROAD_CLEAR,
-                               6.0 + roads.BRIDGE_HEADROOM_MARGIN_M + roadmesh.DECK_DEPTH + roadmesh.GIRDER_D)
+                               4.9 + roads.BRIDGE_HEADROOM_MARGIN_M + roadmesh.DECK_DEPTH + roadmesh.GIRDER_D)
 
     def test_smoothing_cannot_lower_a_feasible_crossing_corridor(self):
         xy = line()
@@ -74,7 +75,7 @@ class MinimumBridgeClearanceTest(TestCase):
         vertices, triangles, *_ = roadmesh.deck([chunk], (0.0, 0.0, 0.0))
         corridor = vertices[(vertices[:, 0] >= 180.0) & (vertices[:, 0] <= 224.0)]
         self.assertGreater(len(corridor), 0)
-        self.assertGreaterEqual(float(corridor[:, 2].min()) - 10.0, 6.0)
+        self.assertGreaterEqual(float(corridor[:, 2].min()) - 10.0, roads.MIN_BRIDGE_HEADROOM_M)
         self.assertTrue(np.isfinite(vertices).all())
         self.assertTrue(((triangles >= 0) & (triangles < len(vertices))).all())
 
@@ -89,7 +90,7 @@ class MinimumBridgeClearanceTest(TestCase):
         b = np.c_[np.zeros(len(a)), a[:, 0]]
         low, high = roads.deck_profile([a, b], flat, levels=[1.0, 2.0], widths=[12.0, 12.0])
         usable = high[len(high) // 2] - low[len(low) // 2] - roadmesh.DECK_DEPTH - roadmesh.GIRDER_D
-        self.assertGreaterEqual(usable, 6.0)
+        self.assertGreaterEqual(usable, roads.MIN_BRIDGE_HEADROOM_M)
 
     def test_impossible_short_span_is_reported_without_a_vertical_wall(self):
         xy = line(60.0)
@@ -124,7 +125,7 @@ class MinimumBridgeClearanceTest(TestCase):
         with mock.patch("bridgetypes.nav_clearance", return_value=0.0), \
                 self.assertLogs("earthd.roads", level="WARNING") as messages:
             bp._solve([key], pool, {("lower", "g"): [lower]})
-        self.assertIn("below 6.0 m target", " ".join(messages.output))
+        self.assertIn(f"below {roads.MIN_BRIDGE_HEADROOM_M} m target", " ".join(messages.output))
 
 
 class MergeJointTest(TestCase):
@@ -184,9 +185,9 @@ class TwinLiftTest(TestCase):
 
 
 class SemiApproachIntegrationTest(TestCase):
-    def test_approach_and_generated_deck_clear_six_metres(self):
+    def test_approach_and_generated_deck_clear_the_headroom(self):
         fixture = approaches.OverpassIntegrationTest("test_deck_clears_the_lanes")
         separation, grade = fixture.deck_over_lanes(True)
         usable = separation - roadmesh.DECK_DEPTH - roadmesh.GIRDER_D
-        self.assertGreaterEqual(float(usable.min()), 6.0)
+        self.assertGreaterEqual(float(usable.min()), roads.MIN_BRIDGE_HEADROOM_M)
         self.assertLessEqual(grade, roads.DECK_MAX_GRADE)
