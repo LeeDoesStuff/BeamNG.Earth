@@ -10,8 +10,9 @@
   hump      a deck end over the line of its street's own ground (the DEM HUMP_FIT_M past the end, extrapolated to it) by
             more than HUMP_M: the made-up ramp onto a bridge (approach_check's lift at 12 m reads the DEM's smoothed
             trench wall as the street where Overture's bridge range ends short: Fort Hamilton Parkway, 2026-10-29)
-  hill      a city street (CITY) lifted more than HILL_M over the DEM farther than ABUT_SKIP_M from any deck end, or its
-            graded grade over 20 m more than HILL_GRADE over the DEM's own there with a lift of LIFT_MIN_M
+  hill      a city street (CITY) lifted more than HILL_M over the DEM (its pits narrower than PIT_M filled) farther than
+            ABUT_SKIP_M from any deck end, or its graded grade over 20 m more than HILL_GRADE over the DEM's own there
+            with a lift of LIFT_MIN_M
   curve     vertical curvature over 20 m (1/m, as approach_check) over CURV_CITY on a city street or CURV_FAST on a
             motorway/trunk and over 1.5 times the DEM's own (times v^2 is the load: 0.01 at 40 km/h is ~0.12 g)
   junction  the planned heights of the roads meeting at a node spread over JUNCTION_M (the ground blends them: a slope)
@@ -94,6 +95,7 @@ HUMP_FIT_M = (20.0, 60.0)   # m past the end the street's own ground is fitted o
 HILL_M = 1.0                # m a city street may be lifted over the DEM away from decks
 HILL_GRADE = 0.02           # graded grade over the DEM's own (NYC_NOTES: + 2 %)
 LIFT_MIN_M = 0.3            # ... where the street is lifted at least this (a cut into a hump is no made-up hill)
+PIT_M = 40.0                # m: a dip in the DEM narrower than this is a pit the street spans (a cut, a lidar hole)
 ABUT_SKIP_M = 25.0          # m from a deck end the lifts are the deck's (hump), not a hill
 CURV_CITY = 0.01            # 1/m over 20 m on a city street (~0.12 g at 40 km/h)
 CURV_FAST = 0.003           # 1/m on a motorway or trunk (~0.15 g at 80 km/h)
@@ -148,6 +150,44 @@ def enu(ll):
 def to_ll(xy):
     la, lo, _ = frame.enu_to_geodetic(xy[:, 0], xy[:, 1], np.zeros(len(xy)))
     return np.asarray(la, float), np.asarray(lo, float)
+
+
+def goes_on(line, at_end, lines, reach):
+    """grading._goes_on (not in main before the town cut): the first reach m of the road going on from line's end."""
+    line = np.asarray(line, float)[:, :2]
+    inward = line[::-1] if at_end else line
+    node = inward[0]
+    d0 = node - grading._point_along(inward, grading.CHAIN_LOOK_M)
+    best, best_turn = None, grading.CHAIN_TURN_DEG
+    for other in lines:
+        other = np.asarray(other, float)[:, :2]
+        if len(other) < 2 or (len(other) == len(line) and np.array_equal(other, line)):
+            continue
+        for out in (other, other[::-1]):
+            if np.hypot(*(out[0] - node)) > grading.CHAIN_JOIN_M:
+                continue
+            d1 = grading._point_along(out, grading.CHAIN_LOOK_M) - out[0]
+            c = float(np.dot(d0, d1)) / max(float(np.hypot(*d0) * np.hypot(*d1)), 1e-9)
+            turn = math.degrees(math.acos(max(-1.0, min(1.0, c))))
+            if turn <= best_turn:
+                best, best_turn = out, turn
+    if best is None:
+        return None
+    s = np.r_[0.0, np.cumsum(np.hypot(*np.diff(best, axis=0).T))]
+    k = int(np.searchsorted(s, reach))
+    if k < len(s):
+        return np.vstack([best[:k], [np.interp(reach, s, best[:, 0]), np.interp(reach, s, best[:, 1])]])
+    return best
+
+
+def closing(v, w):
+    """v (a profile every 1 m) with its pits narrower than w m filled: the running max, then the running min, over w."""
+    h = int(w) // 2
+    if len(v) < 3 or h < 1:
+        return v
+    sw = np.lib.stride_tricks.sliding_window_view
+    mx = sw(np.pad(v, h, mode="edge"), 2 * h + 1).max(1)
+    return sw(np.pad(mx, h, mode="edge"), 2 * h + 1).min(1)
 
 
 def up(xy, h):
@@ -351,7 +391,49 @@ def graded_checks(on):
     by = {r["fid"]: r for r in rows}
     ground = [(r, ln) for r in rows for ln in r["ground"] if len(ln) >= 2]
     gends = Grid([(ln[0], ln[0], (r, ln, 0)) for r, ln in ground] + [(ln[-1], ln[-1], (r, ln, 1)) for r, ln in ground])
+    tends = Grid([(p, p, None) for r in rows for ln in r["tunnels"] if len(ln) >= 2 for p in (ln[0], ln[-1])])
     deck_near = Grid([(p, p, None) for p in dend]) if len(dend) else None
+
+    # the plans of every cell the region's roads reach (as apply takes them): the road plans for the junctions and the
+    # ramps; with the tunnels' and the rail beds' for what a wall or a step is up against
+    rxy = np.concatenate([resample(ln, 20.0)[0] for r in region for ln in r["ground"] if len(ln) >= 2] or
+                         [np.zeros((0, 2))])
+    pl, pl_all = [], []
+    for k in (g._keys(*to_ll(rxy)) if len(rxy) else []):
+        for fid_part, p in g._cell_plans(k):
+            other = grading.TUNNEL_TAG in fid_part or fid_part.startswith(grading.RAIL_TAG)
+            pxy = np.asarray(p.xy, float)[:, :2]
+            for m in range(len(pxy) - 1):
+                seg = (pxy[m], pxy[m + 1], (fid_part, float(p.z[m]), float(p.z[m + 1]), p.half))
+                pl_all.append(seg)
+                if not other:
+                    pl.append(seg)
+    pg, pga = Grid(pl), Grid(pl_all)
+
+    def why(r, p):
+        """What a wall or a step at p on road r is up against: its own plan's height and the plan near it farthest off
+        that (a road, a tunnel's section or mouth, a rail bed), weighed by how near."""
+        near = pga.near(p, 20.0)
+        own = [za + (zb - za) * t for dd, (fp, za, zb, _h), t in near if fp.split(grading.TUNNEL_TAG)[0] == r["fid"]
+               and dd < 2.0]
+        if not own:
+            return " [no own plan]"
+        zo = float(np.mean(own))
+        best = None
+        for dd, (fp, za, zb, h), t in near:
+            if fp.split(grading.TUNNEL_TAG)[0] == r["fid"] and grading.TUNNEL_TAG not in fp:
+                continue
+            zz = za + (zb - za) * t
+            w = abs(zz - zo) / (1.0 + max(0.0, dd - h))
+            if abs(zz - zo) > 0.3 and (best is None or w > best[0]):
+                best = (w, fp, zz, dd)
+        if best is None:
+            return f" [own plan {zo:.2f}]"
+        fp = best[1]
+        kind = ("tunnel " if grading.TUNNEL_TAG in fp else "rail " if fp.startswith(grading.RAIL_TAG) else "")
+        base = fp.split(grading.TUNNEL_TAG)[0].replace(grading.RAIL_TAG, "")
+        nm = (by[base]["name"] or by[base]["cls"]) if base in by else base[:8]
+        return f" [own plan {zo:.2f}; {kind}{nm} {base[:8]} at {best[2]:.2f}, {best[3]:.1f} m off]"
 
     # (1) profiles of the region's ground parts, every 1 m
     prof = []
@@ -394,11 +476,12 @@ def graded_checks(on):
             if abs(d1[j]) > WALL_STEP_M or (n > 2 and g2[j2] > WALL_GRADE):
                 jj = j if abs(d1[j]) > WALL_STEP_M else j2
                 out.append(("wall", float(max(abs(d1[j]), g2[j2] if n > 2 else 0)), r, xy[jj],
-                            f"jump {abs(d1[j]):.2f} m in 1 m / grade {g2[j2] * 100 if n > 2 else 0:.0f} % over 2 m"))
+                            f"jump {abs(d1[j]):.2f} m in 1 m / grade {g2[j2] * 100 if n > 2 else 0:.0f} % over 2 m"
+                            + why(r, xy[jj])))
             else:
                 j = int(np.argmax(np.where(kk, res, -1)))
                 if res[j] > STEP_M:
-                    out.append(("step", float(res[j]), r, xy[j], f"{res[j]:.2f} m in 1 m beyond its grade"))
+                    out.append(("step", float(res[j]), r, xy[j], f"{res[j]:.2f} m in 1 m beyond its grade" + why(r, xy[j])))
         if n > 41:
             c = np.abs(zg[40:] - 2 * zg[20:-20] + zg[:-40]) / 400.0
             cd = np.abs(np.convolve(zd, np.ones(9) / 9, "same")[40:] - 2 * np.convolve(zd, np.ones(9) / 9, "same")[20:-20]
@@ -411,6 +494,10 @@ def graded_checks(on):
                     j = int(np.argmax(np.where(bad, c, -1)))
                     out.append(("curve", float(c[j]), r, xy[j + 20], f"{c[j]:.4f} /m [DEM {cd[j]:.4f}]"))
         if cls in CITY:
+            # (over the DEM with its pits narrower than PIT_M filled: a street crossing a rail cut with no bridge in the
+            # map stays at its level over it, Ocean Parkway over the LIRR's Bay Ridge cut at 40.6281,-73.9712: 6 m
+            # "lifted" over a 10 m trench, no hill)
+            zd = closing(zd, PIT_M)
             lift = zg - zd
             far = (dd > ABUT_SKIP_M) & keep
             if (far & (lift > HILL_M)).any():
@@ -439,11 +526,12 @@ def graded_checks(on):
                 continue
             app = [(dd, pl) for dd, pl, _t in gends.near(p, grading.APPROACH_TOUCH_M)]
             if not app:
-                out.append(("deck", math.inf, r0, p, "free end with no road leading onto it"))
+                if not tends.near(p, grading.APPROACH_TOUCH_M):     # (a tunnel's portal there: the road goes on in it)
+                    out.append(("deck", math.inf, r0, p, "free end with no road leading onto it"))
                 continue
             for _dd, (r, ln, at) in sorted(app, key=lambda a: a[0])[:2]:
                 inward = ln if at == 0 else ln[::-1]
-                on = grading._goes_on(ln, at == 0, gl, HUMP_FIT_M[1] + 10.0)     # (on past its far end)
+                on = goes_on(ln, at == 0, gl, HUMP_FIT_M[1] + 10.0)     # (on past its far end)
                 path = inward if on is None else np.vstack([inward, on[1:]])
                 pxy, pt = resample(path, 1.0)
                 zz = up(pxy[:3], graded(pxy[:3]))
@@ -461,15 +549,6 @@ def graded_checks(on):
                                                         f"(grade {b * -100:+.1f} %; lift at 12 m {lift12:.1f})"))
 
     # (3) junctions: the planned heights at the nodes where ground part ends meet
-    pl = []
-    for k in g._keys(*to_ll(np.array([lo_b, hi_b]))):
-        for fid_part, p in g._cell_plans(k):
-            if grading.TUNNEL_TAG in fid_part or fid_part.startswith(grading.RAIL_TAG):
-                continue
-            pxy = np.asarray(p.xy, float)[:, :2]
-            for m in range(len(pxy) - 1):
-                pl.append((pxy[m], pxy[m + 1], (fid_part, float(p.z[m]), float(p.z[m + 1]), p.half)))
-    pg = Grid(pl)
     nodes = defaultdict(list)
     for r, ln in ground:
         for p in (ln[0], ln[-1]):

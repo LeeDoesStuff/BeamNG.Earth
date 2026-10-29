@@ -255,6 +255,10 @@ def level_ranges(feats, i):
     memo = feats.__dict__.setdefault("_level_ranges", {})
     got = memo.get(i)
     if got is None:
+        home = _home(feats, i)
+        if home is not None:
+            got = memo[i] = level_ranges(*home)
+            return list(got)
         _cell_ranges(feats)
         got = memo.get(i)
         if got is None:
@@ -267,11 +271,52 @@ def raw_level_ranges(feats, i):
     memo = feats.__dict__.setdefault("_raw_level_ranges", {})
     got = memo.get(i)
     if got is None:
+        home = _home(feats, i)
+        if home is not None:
+            got = memo[i] = raw_level_ranges(*home)
+            return list(got)
         _cell_ranges(feats, load_only=True)
         got = memo.get(i)
         if got is None:
             got = memo[i] = _level_ranges(feats, i)
     return list(got)
+
+
+def _home_key(feats, i):
+    """The key (str) of feature i's home cell when it is another than feats' and the layer can reach it, else None."""
+    cell = feats.__dict__.get("_bnge_cell")
+    if feats.__dict__.get("_bnge_home") is None or cell is None or "cx" not in feats.attrs or "cy" not in feats.attrs:
+        return None
+    try:
+        home = str(mapcells.cell_of(float(feats.attrs["cy"][i]), float(feats.attrs["cx"][i])))
+    except (ValueError, TypeError):
+        return None
+    return None if home == cell[0] else home
+
+
+def _home(feats, i):
+    """(feats, index) of feature i in its home cell's roads (the cell its bbox centre lies in, cx / cy: the one that
+    builds it, Features.own) when that is another cell and the layer can reach it (mapdata's _bnge_home), else None.
+    A feature's level ranges are its home copy's in every cell: each copy lengthened its decks over the roads under them
+    and the bridges joined to it that its own cell has (_skew_decks), and copies in two cells disagreed by metres where
+    a deck ends near a cell's edge. One cell's grading had the Brooklyn-Queens Expressway's exit at Kent Avenue (b76c613e)
+    leave its deck 9 m short, down the DEM's slope under the deck's end: a 2.4 m wall; 27 of the 265 features with
+    ranges in two cells or more along the BQE disagreed (connect_check, 2026-10-29)."""
+    home = _home_key(feats, i)
+    if home is None:
+        return None
+    hook = feats.__dict__["_bnge_home"]
+    try:
+        other = hook(home)
+    except Exception as e:      # (its cell not to be had: this copy's own ranges, as before)
+        log.debug("roads: home cell %s of %s: %s: %s", home, feats.ids[i], type(e).__name__, e)
+        return None
+    if other is None or not len(other):
+        return None
+    j = int(np.searchsorted(other.ids, feats.ids[i]))
+    if j >= len(other) or other.ids[j] != feats.ids[i]:
+        return None             # (not in it: an L whose bbox centre is off its line)
+    return other, j
 
 
 # Per-cell facts shared by the server's processes and kept for the next run (the revisit cache: one file per cell and
@@ -326,6 +371,8 @@ def _cell_ranges(feats, load_only=False):
         if got is not None and len(got.get("raw", ())) == len(feats) and len(got.get("lvl", ())) == len(feats):
             raw, lvl = st.setdefault("_raw_level_ranges", {}), st.setdefault("_level_ranges", {})
             for i in range(len(feats)):
+                if got["raw"][i] is None:
+                    continue            # (another cell is its home: asked there, _home)
                 raw.setdefault(i, [tuple(r) for r in got["raw"][i]])
                 lvl.setdefault(i, [tuple(r) for r in got["lvl"][i]])
             st["_ranges_state"] = "done"
@@ -335,12 +382,16 @@ def _cell_ranges(feats, load_only=False):
         return
     import revisit
     f0 = revisit.faults()
-    raw = [raw_level_ranges(feats, i) for i in range(len(feats))]
-    lvl = [level_ranges(feats, i) for i in range(len(feats))]
+    # (the features this cell is home to: the others' are their home cells', asked there when they are asked for here,
+    # not all at once: each home cell's own all-at-once asked its neighbours' in turn, without end)
+    mine = [_home_key(feats, i) is None for i in range(len(feats))]
+    raw = [raw_level_ranges(feats, i) if m else None for i, m in enumerate(mine)]
+    lvl = [level_ranges(feats, i) if m else None for i, m in enumerate(mine)]
     st["_ranges_state"] = "done"
     if revisit.faults() == f0:
-        _facts_store(feats, "ranges", None, {"raw": [[[float(a), float(b), k] for a, b, k in r] for r in raw],
-                                             "lvl": [[[float(a), float(b), k] for a, b, k in r] for r in lvl]})
+        _facts_store(feats, "ranges", None, {
+            "raw": [None if r is None else [[float(a), float(b), k] for a, b, k in r] for r in raw],
+            "lvl": [None if r is None else [[float(a), float(b), k] for a, b, k in r] for r in lvl]})
 
 
 # A bridge over a road spans more than its carriageway: the road's shoulders and the abutments' slopes stand under it.
@@ -839,7 +890,12 @@ PORTAL_EXTEND_MAX_M = 25.0  # going on straight up to this far past the mapped e
                             # portal face stood across the E6's lanes in Norway, GitHub #2)
 PORTAL_JOIN_M = 1.5         # a road this near a tunnel's end meets it there (a garage ramp ending in a street), not over it
 UNDERPASS_MAX_M = 80.0      # only tunnel parts this short (an underpass) under roads of PORTAL_CLASSES are carried on
-PORTAL_CLASSES = {"motorway", "trunk", "primary", "secondary"}
+# (and a city's streets: OpenStreetMap's East Burnside Avenue underpass in the Bronx ends ~10 m past the Grand
+# Concourse's service roads (tertiary), inside their graded ground: its floor at the portals came out at the blended
+# 25.7 m over the cut's 24 m, 3.8 m under the Concourse, so it was graded as an open road and dug the service roads
+# 1.7 m down where they cross it, connect_check, 2026-10-29)
+PORTAL_CLASSES = {"motorway", "trunk", "primary", "secondary", "tertiary", "residential", "unclassified",
+                  "living_street"}
 
 
 def _clear_portals(feats, i, parts):
@@ -912,7 +968,10 @@ def _clear_end(feats, i, rs, ring, at_start, half):
             if float(np.hypot(*(a_ + t_[:, None] * d_).T).min()) < PORTAL_JOIN_M or not _crosses(m, gm):
                 continue                        # joined here (an end at it or a T junction) / not over the tunnel
             hw = rs[j].width / 2
-            roads_m.append((gm, ((0, hw + grading.T_MAX), (1, hw + PORTAL_CLEAR_M), (2, hw + PORTAL_CLEAR_M))))
+            # (its ground graded out to the plan's half width, a town street's with its parking: grading._plan)
+            gw = max(rs[j].width, carriageway(rs[j].cls, rs[j].kind, True, None, rs[j].oneway)) / 2 \
+                + grading.shoulder(rs[j]) if rs[j].kind in BUILT else hw
+            roads_m.append((gm, ((0, gw + grading.T_MAX), (1, hw + PORTAL_CLEAR_M), (2, hw + PORTAL_CLEAR_M))))
 
     def clear(c):
         pts = np.array([c, c + nrm * half, c - nrm * half])

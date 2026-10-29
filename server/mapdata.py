@@ -591,6 +591,9 @@ class MapData:
                     self._rails(key, layer, cd.layers[layer])
                     if layer == "roads":        # (the bridges the map lacks, found when its ranges are first asked)
                         cd.layers[layer].__dict__["_bnge_gradesep"] = gradesep.hook(self, key)
+                        # (another cell's roads, for the level ranges of a feature that cell is home to: roads._home)
+                        cd.layers[layer].__dict__["_bnge_home"] = lambda k2, _md=self: _md.cell(
+                            k2, layers=("roads",), kind="demand").layers.get("roads")
                     cd.layers[layer].__dict__["_bnge_cell"] = (str(key), layer, json.dumps(self.versions(),
                                                                                            sort_keys=True))
                 elif "missing" in arrays:

@@ -1242,6 +1242,31 @@ class BridgeReachTest(unittest.TestCase):
         self.assertNotIn("busy", seen["other"])
 
 
+class HomeCopyTest(unittest.TestCase):
+    def test_a_features_copies_take_its_home_cells_ranges(self):
+        """A street joined to a short bridge over a motorway, in two cells' maps: the one its bbox centre lies in (its
+        home) has the motorway under the bridge and lengthens the deck onto the street (_skew_decks); the other has not
+        and would leave it short. Both copies take the home copy's ranges (_home), so every cell draws and grades the
+        deck's end at one place (the BQE's exit at Kent Avenue in Brooklyn: 9 m apart, a 2.4 m wall, 2026-10-29)."""
+        import mapcells
+        lines = [[(0, -10), (0, 10)], [(-400, 0), (400, 0)], [(0, 10), (0, 260)]]
+        home = features(lines, ["tertiary", "motorway", "tertiary"], flags=[(0, "is_bridge")])
+        away = features([lines[0], lines[2]], ["tertiary", "tertiary"], flags=[(0, "is_bridge")], ids=["id000", "id002"])
+        for f, ls in ((home, lines), (away, [lines[0], lines[2]])):
+            f.attrs["cx"] = np.array([LON + (min(e for e, _ in ln) + max(e for e, _ in ln)) / 2 / M_LON for ln in ls])
+            f.attrs["cy"] = np.array([LAT + (min(n for _, n in ln) + max(n for _, n in ln)) / 2 / M_LAT for ln in ls])
+        key = str(mapcells.cell_of(LAT + 135.0 / M_LAT, LON))
+        home.__dict__["_bnge_cell"] = (key, "roads", "")
+        self.assertGreater(roads.level_ranges(home, 2)[0][1], 0.0, "the deck carried onto the street at home")
+        self.assertEqual(roads.level_ranges(away, 1), [], "alone, the other cell's copy leaves it")
+        away = features([lines[0], lines[2]], ["tertiary", "tertiary"], flags=[(0, "is_bridge")], ids=["id000", "id002"])
+        away.attrs["cx"], away.attrs["cy"] = home.attrs["cx"][[0, 2]], home.attrs["cy"][[0, 2]]
+        away.__dict__["_bnge_cell"] = ("14/0/0", "roads", "")
+        away.__dict__["_bnge_home"] = lambda k: home if k == key else None
+        self.assertEqual(roads.level_ranges(away, 1), roads.level_ranges(home, 2))
+        self.assertEqual(roads.ground_parts(away, 1)[0].tolist(), roads.ground_parts(home, 2)[0].tolist())
+
+
 class ChainResolveTest(unittest.TestCase):
     """BridgeProfiles._resolve: a cell loaded at a loose end can put a longer copy of a part already in the chain into
     the pool (its ends then new); the chain is followed on instead of failing (KeyError, a Chicago road tile,
