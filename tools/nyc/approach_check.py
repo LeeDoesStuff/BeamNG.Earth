@@ -101,7 +101,9 @@ def run(on):
             u = (p - q) / max(np.hypot(*(p - q)), 1e-9)
             pts = np.array([p + u * t for t in AT])
             zg = graded(pts)
-            out[(fid, tuple(np.round(p, 0)))] = (float(zd), zg - zd, zg - z(*to_ll(pts)))
+            # (the deck's heights are the frame's up, the earth's curvature off: the street's too, for street - deck)
+            zu = np.asarray(frame.geodetic_to_enu(*to_ll(pts), zg)[2], float)
+            out[(fid, tuple(np.round(p, 0)))] = (float(zd), zu - zd, zg - z(*to_ll(pts)))
     prof = {}
     for f in feats:
         for i in range(len(f.kind)):

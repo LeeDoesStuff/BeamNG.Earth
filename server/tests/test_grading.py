@@ -12,7 +12,7 @@ import geodesy  # noqa: E402
 import grading  # noqa: E402
 import mapcells  # noqa: E402
 import roads  # noqa: E402
-from test_roads import features, rules, LAT, LON, FRAME  # noqa: E402
+from test_roads import features, rules, LAT, LON, FRAME, M_LAT, M_LON  # noqa: E402
 
 
 class ProfileTest(unittest.TestCase):
@@ -660,6 +660,73 @@ class TownCutTest(unittest.TestCase):
         need = 4.0 + roads.DECK_ROAD_CLEAR + grading.APPROACH_MARGIN_M      # (the deck over the trench's floor)
         self.assertAlmostEqual(float(country[2]), need, delta=0.4, msg="the ramp from the filled street, not from the slope")
         self.assertAlmostEqual(float(country[0]), 4.0, delta=0.3, msg="the overpass rises: the trench stays")
+
+    def test_abutment_height_reads_the_road_going_on_past_the_far_end(self):
+        """A short street part onto a bridge whose end is on the DEM's trench slope, the street going on past its far
+        end: the abutment is the street's grade filled up to the bridge, read on the road that goes on away from it.
+        Joined past the bridge end instead, the profile's end sample was that road's ground 40-50 m off (Fort Hamilton
+        Parkway over Brooklyn's Prospect Expressway: 16.7 m where the street's plan has 18.6, the trench dug ~2 m too
+        deep under it, 2026-10-29). Either way round."""
+        def ground(p):          # the street at 10 m falling 2 % away from the bridge; the trench's slope its last 10 m
+            n = np.asarray(p, float)[:, 1]
+            return np.where(n <= -10.0, 10.0 + 0.02 * (n + 10.0), 10.0 - 0.5 * (n + 10.0))
+        part = np.array([(0.0, 0.0), (0.0, -12.0)])
+        on = np.array([(0.0, -12.0), (0.0, -120.0)])
+        for a, b in ((part, on), (part[::-1].copy(), on[::-1].copy())):
+            h = grading.abutment_height(np.array([0.0, 0.0]), [a], ground, [a, b])
+            self.assertAlmostEqual(h, 10.2, delta=0.1, msg="the street's 2 % carried its last 10 m to the bridge end")
+
+
+class JunctionDipTest(unittest.TestCase):
+    def test_a_road_joined_at_a_dipped_junction_rises_back_at_the_dips_grade(self):
+        """A motorway dips under a deck 150 m on from where its link leaves it: the link shares the gore's dip there
+        and rises back from it no steeper than the dip's own ramps (UNDER_GRADE), deeper only. The kernel blends it
+        back over UNDER_JOINT_FADE_M whatever the depth: 12-18 % on the exit from Brooklyn's Prospect Expressway at
+        Fort Hamilton Parkway once the town cut dug its trench, a jolt beside the mainline (connect_check, 2026-10-29)."""
+        def line(a, b):
+            a, b = np.asarray(a, float), np.asarray(b, float)
+            return np.linspace(a, b, int(np.ceil(np.linalg.norm(b - a))) + 1)
+        x = 150
+        lines = [line((-600, 0), (-x, 0)), line((-x, 0), (600, 0)), line((-x, 0), (-x + 260.0, 150.0))]
+        req = [(1, float(x), 6.0)]
+        with unittest.mock.patch.object(grading, "UNDER_JOINT_GENTLE_ON", False):
+            before = grading.underpass_offsets(lines, req)
+        after = grading.underpass_offsets(lines, req)
+        arc = np.r_[0.0, np.cumsum(np.hypot(*np.diff(lines[2], axis=0).T))]
+
+        def steepest(o):
+            return float(np.abs(np.diff(o) / np.diff(arc)).max())
+        self.assertGreater(steepest(before[2]), 1.4 * grading.UNDER_GRADE, "the kernel's blend alone")
+        self.assertLessEqual(steepest(after[2]), 1.15 * grading.UNDER_GRADE, "the link at the dip's grade")
+        self.assertAlmostEqual(after[2][0], after[1][0], places=9, msg="the gore shared")
+        self.assertAlmostEqual(after[0][-1], after[1][0], places=9)
+        self.assertAlmostEqual(float(after[1][x]), -6.0, places=6, msg="the clearance under the deck as it was")
+        for a, b in zip(after, before):
+            self.assertTrue(np.all(a <= b + 1e-9), "deeper only")
+
+
+class ExtensionFillTest(unittest.TestCase):
+    def test_an_extension_onto_a_bridge_is_filled_as_the_road_it_runs_on(self):
+        """A street part ending at a node 12 m short of a bridge, the street going on onto it: its profile's extension
+        over that 12 m stub reaches the DEM's trench slope at the abutment. Filled there as the stub's own plan fills
+        it (ext_abut), the two plans meet at the node; raw, the part sagged under the DEM at the node (Seeley Street
+        and 18th Street over Brooklyn's Prospect Expressway: 1.4 m between the plans meeting there, 2026-10-29)."""
+        def ll(pts):
+            return np.array([(LON + e / M_LON, LAT + n / M_LAT) for e, n in pts])
+
+        def elev(la, lo):           # the street at 10 m; the trench's slope from 2 m short of the bridge
+            e = np.asarray(FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), 0.0)[0])
+            return np.where(e <= 2.0, 10.0, 10.0 - 0.5 * (e - 2.0))
+        sp = roads.Spec(8.0, "paved", False, "residential", False)
+        part, stub = ll([(-200, 0), (0, 0)]), ll([(0, 0), (12, 0)])
+        ext = [(None, np.array([(0.0, 0.0), (12.0, 0.0)]))]
+        raw, = grading.plan_roads(FRAME, [(part, sp)], elev, None, ext, cuts=False)
+        filled, = grading.plan_roads(FRAME, [(part, sp)], elev, None, ext, cuts=False, ext_abut=[(False, True)])
+        own, = grading.plan_roads(FRAME, [(stub, sp)], elev, [(False, True)], [(np.array([(0.0, 0.0), (-200.0, 0.0)]),
+                                                                                 None)], cuts=False)
+        self.assertLess(float(raw.z[-1]), 9.5, "raw: the slope in its smoothing")
+        self.assertAlmostEqual(float(filled.z[-1]), float(own.z[0]), delta=0.05, msg="one height at the node")
+        self.assertAlmostEqual(float(filled.z[-1]), 10.0, delta=0.05)
 
 
 class RacewayKeepTest(unittest.TestCase):

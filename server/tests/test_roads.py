@@ -1216,6 +1216,32 @@ class ViewOrderTest(unittest.TestCase):
         self.assertEqual(sorted(want, key=other), [(0, 0), (-2, 0), (3, 0)])
 
 
+class BridgeReachTest(unittest.TestCase):
+    def test_another_thread_never_reads_a_reach_half_made(self):
+        """Two threads planning neighbouring cells ask for the same bridge's reach (_bridge_reach) at once: the one
+        that asks while the other is making it waits for it, not reads its placeholder ("over" 0). It did, and
+        _skew_decks kept the street joined to the bridge unlengthened for good: the deck's end and the underpass dip
+        under it changed from run to run (test_grading's town-cut test failed every other run, 2026-10-29)."""
+        import threading
+        from unittest import mock
+        f = features([[(-400, 0), (400, 0)], [(0, -10), (0, 10)], [(0, 10), (0, 260)]],
+                     ["motorway", "tertiary", "tertiary"], flags=[(1, "is_bridge")])
+        real, seen = roads.road_specs, {}
+
+        def slow(feats, *a, **k):           # (the other thread asks while this one is making the reach)
+            if "t" not in seen:
+                seen["t"] = threading.Thread(target=lambda: seen.setdefault("other", roads._bridge_reach(feats, 1)))
+                seen["t"].start()
+                seen["t"].join(0.3)
+            return real(feats, *a, **k)
+        with mock.patch.object(roads, "road_specs", slow):
+            mine = roads._bridge_reach(f, 1)
+        seen["t"].join(10.0)
+        self.assertGreater(max(mine["over"]), 1.0, "the deck reaches past its end over the motorway's width")
+        self.assertEqual(seen["other"]["over"], mine["over"])
+        self.assertNotIn("busy", seen["other"])
+
+
 class ChainResolveTest(unittest.TestCase):
     """BridgeProfiles._resolve: a cell loaded at a loose end can put a longer copy of a part already in the chain into
     the pool (its ends then new); the chain is followed on instead of failing (KeyError, a Chicago road tile,

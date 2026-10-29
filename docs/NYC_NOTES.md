@@ -35,6 +35,10 @@ go back as PRs.
 | Streets over a town motorway stay at street level: the trench is cut to the clearance under the deck (the underpass dip, 8 m at most) *before* the street's ramps are raised, which now lift only what the dip can't give. `gives_way`: motorway/trunk and their links in built-up land (the ones with the 10 m concrete wall; a link is never urban in `road_specs`, so `_town_walls` reads the land cover at its points), underpasses on. Was: ramps first (up to 10 m), the dip for the rest, so the DEM's interpolated trench floor under each deck (-0.1 to 2.4 m deep at 11th Ave) became a 5-7 m hump. `BNE_TOWN_CUT=off` for the old ramps | `grading.py` `TOWN_CUT_ON`, `gives_way`, `bridge_lifts(sunk_lines=)`, `_cell_enu_calc` (town specs, `gives_way` per ground part), `_ground_table`, `_end_lift_calc`, `_town_walls` | `test_grading.TownCutTest`; `tools/nyc/depth_check.py` now also prints the solved deck (`BridgeProfiles` on the graded ground), its clearance over the graded expressway and its ends against the street |
 | A short deck's chain is one span for the dip: `roads._skew_decks` carries every short deck a few metres onto the streets it joins (11th Ave: a 5 m piece + two 33 m forks), and `_lower_underpasses` took "joined" as "no span" — no dip at all under most street decks; `bridge_lifts`' give-way likewise. Now parts joined at their ends, ≤ 120 m in all, are one span with the abutments at the chain's free ends | `grading.py` `_lower_underpasses` (union-find over `uniq`, `free`, `chain_ends`), `_span_key`, `bridge_lifts` | `test_grading.TownCutTest.test_a_bridge_range_ending_inside_the_cutting` |
 | The abutment of a deck ending on the DEM's trench slope (the 10-30 m DEM smooths the Prospect Expwy's walls into 1:3 banks; Overture's range ends ~10 m inside them: 31.6 m at 11th Ave's end where the street is 38.7 m): the ramps (`bridge_lifts`), the dip's deck height (`_lower_underpasses`) and the street's plan all take the *filled* height (`abutment_height` = `fill_abutment` on the approach with the road it goes on in past its far end, `_goes_on`), and `fill_abutment` drops the stretch's samples still on the slope before fitting the grade (a 22 m part had its 14-40 m stretch on the slope's top: no fill, a 4 m sag into the trench). `plan_roads` fills with the extension in the profile | `grading.py` `abutment_height`, `_goes_on`, `fill_abutment`, `plan_roads`, `bridge_lifts(end_z=)` | same test; `depth_check.py`: 11th Ave decks 37.9 → 36.8-37.6 m, -0.2 m against the street 12 m on, 8.6-9.2 m clear |
+| `abutment_height` joined the road going on past the approach's far end onto its *bridge* end (the two `vstack` branches swapped), so the abutment read that road's ground 40-50 m off: Fort Hamilton Pkwy's 16.7 m where the street's plan has 18.6 m, and the trench under every such deck was dug ~2 m deeper than its deck needs (3ec1b883's dip -1.32 → -0.40 m, 59a150c6's -2.79 → -0.83) | `grading.py` `abutment_height` | `test_grading.TownCutTest.test_abutment_height_reads_the_road_going_on_past_the_far_end` |
+| A part's chain extension that runs onto a bridge's abutment is filled there as the part leading onto it is (`ext_abut`); raw, the DEM's trench slope was in the neighbour's smoothing only: Seeley St (ad9c961c) planned 1.4 m under the DEM at its node with 18th St, 12 m from the d3a5ba33 deck, where the stub and 18th St met the DEM | `grading.py` `plan_roads(ext_abut=)`, `Grader._ext_abuts`, `_make_cell` | `test_grading.ExtensionFillTest` |
+| A road joined at a dipped junction rises back no steeper than the dip's own ramps (`UNDER_GRADE`, deeper only, corners rounded, line ends kept): the kernel blends a junction's roads back over a fixed 20 m whatever the depth, 12-18 % on the exit at Fort Hamilton Pkwy (e8451d88) once the town cut dug the trench, a 0.11 m jolt. In Python (`earthfast` is prebuilt for Windows too), per whole line, the same in every cell. `BNE_UNDER_JOINT_GENTLE=off` for the old blend | `grading.py` `underpass_offsets`, `_gentle_joints`, `_arc_of`, `UNDER_JOINT_GENTLE_ON` | `test_grading.JunctionDipTest` |
+| `roads._bridge_reach` put a placeholder (`over` 0) in its memo while it worked; another thread planning the next cell read it, and `_skew_decks` kept the street joined to the bridge unlengthened for good. The deck's end and the dip under it changed from run to run (`TownCutTest.test_a_bridge_range_ending_inside_the_cutting`: 2.71 or 3.10 m, failed 3 runs in 8). Now one thread makes it, the others wait (an RLock on the cell's features) | `roads.py` `_bridge_reach`, `_bridge_reach_calc`, `_reach_done` | `test_roads.BridgeReachTest`; the town-cut test passes 30/30 |
 
 Not yet tested in game (user testing as of 2026-10-28; the town-cut fixes of 2026-10-29 not yet).
 
@@ -43,6 +47,30 @@ the ends level with the street. Two chains in the cell log `bridge clearance bel
 (`d3a5ba33`, 4.54 m) and `0d19bc63` (4.79 m) — the deck solver's own abutment/grade limits, a semi (4.1 m) still passes.
 
 ## NEXT: humps over the Prospect Expressway — reopened after review (2026-10-29)
+
+### Findings, second pass (2026-10-29)
+
+`approach_check.py` reproduced the review's numbers first (Seeley ad9c961c end 1: 3.8 / 2.9 / 1.8 both off and on;
+Fort Hamilton Pkwy ddcfd6f2: 6.0 / 3.0 / -0.3 off, 3.5 / 1.3 / -0.3 on).
+
+- **Seeley St ad9c961c does not cross the expressway.** Its deck (45 m, 40.6545,-73.9764) spans "Prospect Avenue"
+  (26162ade, tertiary) beside the IND Culver tunnel, in a cut of its own in the DEM (Seeley 32.5 m both sides, Prospect
+  Ave 28.0-28.3 m under it on a steady 7 % grade). The only ground road under it is that tertiary, `gives_way` False:
+  the town cut was never meant to reach it, and its ramps are the clearance over a city street (7.25 m deck over the
+  road under, 4.3 m in the DEM). Open problem 7 below.
+- **Fort Hamilton Pkwy ddcfd6f2 is no ramp.** Both ground parts under it (3ec1b883, 59a150c6) give way (`gives_way`
+  True), and `bridge_lifts` raises neither end. Its "lift at 12 m" is `fill_abutment` carrying the street's own ~4 %
+  rise over the DEM's trench slope, which reaches 16 m back from Overture's bridge end there (DEM 17.8 m at 20 m, 16.8 m
+  at 12 m, 14.4 m at the end). The graded street climbs steadily 16.5 → 18.5 m to the deck and on to 19.9 m, as the DEM
+  does on the two sides. approach_check's lift at 12 m reads the slope as the street; `connect_check.py`'s `hump`
+  (the deck end over the line of the street's own ground 20-60 m past it) is the measure for it: under 1 m on, 2.9 m off.
+- **Open problem 6 is not the cause here:** `town_check.py`'s 9 carriageways all get the wall, and every Prospect Expwy
+  part under a street deck in the corridor gives way.
+- Found on the way, fixed (Done table): `abutment_height`'s swapped join (the trench dug ~2 m too deep), the chain
+  extension's raw trench slope (1.4 m between two plans at Seeley / 18th St), the junction blend (12-18 % on the Fort
+  Hamilton exit), the `_bridge_reach` race (decks ending at random from run to run).
+- `connect_check.py` and approach_check compare deck heights with the ground in the frame's up (the earth's curvature
+  off: 7 cm 930 m from the frame's origin), as the decks have them.
 
 Review of commit `2430373` on real data (Windows, same cache layout): tests pass (391, both road modes); the expressway
 drives fine (max grade 7.7 %, off 7.0 %; curvature over 20 m <= 0.0025 /m, ~0.12 g at 80 km/h). But the street ramps
@@ -125,6 +153,11 @@ ones are listed); no regression in the other cities; tests pass.
    the park is tree cover): no town wall, and the street decks over them rise on ramps as in the country
    (`depth_check` neighbour at ENU (-506, 1110) of 40.6476,-73.9770: lifts 6.7-9.2 m). A motorway in a city
    with buildings on one side should count as urban (`URBAN_BESIDE_SHARE`/`URBAN_BOTH_SHARE` in `roads.py`).
+   (2026-10-29: every Prospect Expwy part under a street deck gives way in the corridor; see NEXT.)
+7. **A city street's bridge over another city street** where the DEM has less room than the deck needs: Seeley St
+   (ad9c961c, 40.6545,-73.9764) over Prospect Ave, 4.3 m between the two in the DEM, 7.25 m from the deck's top to the
+   road under (4.9 m headroom + 2.2 m of slab and girders + margin): Seeley rises ~3 m on 80 m ramps (5 %). Neither
+   road is a town motorway, so neither gives way first.
 
 ## Repro spots
 

@@ -163,6 +163,16 @@ UNDER_FLAT_M = 12.0         # m either side of the crossing kept at the dip's fu
 UNDER_MAX_GRADE = 0.10      # a dip's ramp made steeper, up to this, to end inside its road part (under_dip)
 UNDER_JOINT_FLAT_M = 12.0   # at a junction, every road takes the deepest dip within this of it ...
 UNDER_JOINT_FADE_M = 20.0   # ... blended back to its own over this
+# ... a road joined there rising back from it no steeper than the dip's own ramps (UNDER_GRADE; deeper, never less
+# deep, its corners rounded over UNDER_GENTLE_SIGMA_M, its ends' shared offsets kept within UNDER_GENTLE_END_M).
+# The kernel blends a junction's roads back over UNDER_JOINT_FADE_M whatever the depth (1.5 x depth / 20 m at most):
+# the exit from Brooklyn's Prospect Expressway at Fort Hamilton Parkway left the town cut's 2.4 m dip at its gore
+# within 32 m, 12-18 % on a motorway link beside the trench, a 0.11 m jolt and the link 2.6 m over its mainline
+# (tools/nyc/connect_check.py, 2026-10-29)
+UNDER_JOINT_GENTLE_ON = os.environ.get("BNE_UNDER_JOINT_GENTLE", "on") != "off"
+UNDER_GENTLE_STEP_M = 1.0
+UNDER_GENTLE_SIGMA_M = 3.0
+UNDER_GENTLE_END_M = 10.0
 # m around a cell's plans whose roads and spans its dips are solved on: the farthest a dip or a loose end reaches
 # (underpass_offsets: flat + the longest ramp, a junction's share) and a span's length; every cell sees the same
 UNDER_NEAR_M = 4 * VERTEX_STEP  # m past a cell's box its plans' dips are made (to their pieces' cut ends there)
@@ -284,12 +294,13 @@ def plan_road(frame, lonlat, spec, elev):
     return plan_roads(frame, [(lonlat, spec)], elev)[0]
 
 
-def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True):
+def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True, ext_abut=None):
     """plan_road for many (lonlat, spec) parts with one elev call (its cost is per call); abut: per part (start, end)
     flags, the ends leading onto a bridge (fill_abutment); ext: per part (before, after), the lines (k, 2) in the frame
     from its start / end outward along the part the road goes on in (Grader._extensions), or None: their ground is in
-    the part's profile smoothing; pins: per part (start, end) heights its ends are held at, or None (Grader._pins: a
-    road ending on a more smoothed one meets it at its height). Pure given elev."""
+    the part's profile smoothing; ext_abut: per part (before, after) flags, that extension ends on a bridge (its ground
+    filled there as the part leading onto it is); pins: per part (start, end) heights its ends are held at, or None
+    (Grader._pins: a road ending on a more smoothed one meets it at its height). Pure given elev."""
     if not parts:
         return []
     ll = np.concatenate([lonlat for lonlat, _ in parts])
@@ -341,6 +352,16 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True):
             for at_end in (False, True):
                 if ab[int(at_end)]:
                     zx = fill_abutment(zx, at_end, step)
+        # (an extension running on to a bridge's abutment: its ground filled there as the part it runs along fills
+        # it, so the two plans see the same ground. Raw, the DEM's smoothed trench wall at the abutment was in this
+        # part's smoothing and not in that part's: Seeley Street planned 1.4 m under the DEM at its node with 18th
+        # Street, 12 m from its bridge over Brooklyn's Prospect Expressway, where 18th Street's and the stub's plans
+        # met the DEM: a 1.4 m spread at the junction, 2026-10-29)
+        if ext_abut is not None and ABUT_FILL_ON:
+            if ext_abut[j][0] and nb:
+                zx = fill_abutment(zx, False, step)
+            if ext_abut[j][1] and na:
+                zx = fill_abutment(zx, True, step)
         pin = pins[j] if pins is not None else (None, None)
         if pin[0] is not None and not nb and not ab[0]:     # (the end sample held: the smoothing keeps an end's height)
             zx = zx.copy()
@@ -661,16 +682,18 @@ class Grader:
                     abut = self._abut_ends(key, np.stack([np.asarray(e), np.asarray(n)], axis=1)).reshape(-1, 2)
                 except Exception as e:      # no fills rather than no grading
                     log.debug("grading: abutments of %s: %s: %s", key, type(e).__name__, e)
-            ext = pins = None
+            ext = pins = ext_ab = None
             if CHAIN_ON and parts:
                 try:
                     self._chain_cands(key, feats, specs)        # (this cell's own: its specs are at hand)
                     ext = self._extensions(parts, ids)
                     pins = self._pins(parts, ids, ext)
+                    ext_ab = self._ext_abuts(key, ext) if ABUT_FILL_ON else None
                 except Exception as e:      # each part smoothed alone rather than no grading
                     log.debug("grading: road chains of %s: %s: %s", key, type(e).__name__, e)
             pclip = []
-            for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut, ext, pins)):
+            for fid, part, cl, p in zip(ids, parts, clipped, plan_roads(self.frame, parts, self.elev, abut, ext, pins,
+                                                                        ext_abut=ext_ab)):
                 if p is not None:
                     p.rid = road_id(fid)
                     plans.append((fid, p))
@@ -808,6 +831,21 @@ class Grader:
             for j, i in enumerate(qs):
                 if off[j + 1] - off[j] >= 2:
                     out[i // 2][i % 2] = np.asarray(pts[off[j]:off[j + 1]])
+        return [tuple(o) for o in out]
+
+    def _ext_abuts(self, key, ext):
+        """plan_roads' ext_abut of a cell's extensions (_extensions): per part (before, after), does that extension end
+        on a bridge's end (_abut_ends: within APPROACH_TOUCH_M)? None when none does."""
+        far = [(j, e, np.asarray(o, np.float64)[-1, :2]) for j, pair in enumerate(ext or ())
+               for e, o in enumerate(pair) if o is not None and len(o) >= 2]
+        if not far:
+            return None
+        hit = self._abut_ends(key, np.array([p for _j, _e, p in far], np.float64))
+        if not hit.any():
+            return None
+        out = [[False, False] for _ in ext]
+        for (j, e, _p), h in zip(far, hit):
+            out[j][e] = bool(h)
         return [tuple(o) for o in out]
 
     def _cand_arrays(self, key, cands):
@@ -2123,8 +2161,12 @@ def abutment_height(end, approaches, z_at, lines=()):
             continue
         at_end = bool(np.hypot(*(line[-1] - end)) <= np.hypot(*(line[0] - end)))
         on = _goes_on(line, not at_end, lines, ABUT_FAR_M + PROFILE_STEP) if lines else None
+        # (on runs out of the part's far end, the one away from the bridge: before its first point when the bridge is
+        # at its last. Joined the other way round, past the bridge end, the profile's end sample was the next road's
+        # ground ~40 m off: Fort Hamilton Parkway's abutment over Brooklyn's Prospect Expressway read 16.7 m where the
+        # street's plan has 18.6, so the trench under it was dug ~2 m deeper than its deck needs, 2026-10-29)
         if on is not None:
-            line = np.vstack([line, on[1:]]) if at_end else np.vstack([on[1:][::-1], line])
+            line = np.vstack([on[1:][::-1], line]) if at_end else np.vstack([line, on[1:]])
         length = float(np.hypot(*np.diff(line, axis=0).T).sum())
         if length <= 0:
             continue
@@ -2164,8 +2206,64 @@ def underpass_offsets(lines, requirements, queries=None):
     qline = np.repeat(np.array([int(l) for l, _q in queries], np.int64), [len(q) for q in qs])
     prm = np.array([UNDER_FLAT_M, UNDER_GRADE, UNDER_MAX_GRADE, UNDER_MAX_DROP_M, UNDER_JOINT_FLAT_M,
                     UNDER_JOINT_FADE_M, 0.5], f64)
-    out = fast._ef.underpass_offsets(xy, starts, req, qxy, qline, prm)
+    if not UNDER_JOINT_GENTLE_ON:
+        out = fast._ef.underpass_offsets(xy, starts, req, qxy, qline, prm)
+        return np.split(out, np.cumsum([len(q) for q in qs])[:-1])
+    # (and every queried line whole, every UNDER_GENTLE_STEP_M, for _gentle_joints: the same in every cell)
+    lids = sorted({int(l) for l, _q in queries})
+    whole = [resample(pts[l], UNDER_GENTLE_STEP_M) for l in lids]
+    nq = len(qxy)
+    allq = np.ascontiguousarray(np.vstack([qxy] + [w for w, _s in whole]))
+    allline = np.r_[qline, np.repeat(np.array(lids, np.int64), [len(w) for w, _s in whole])].astype(np.int64)
+    got = fast._ef.underpass_offsets(xy, starts, req, allq, allline, prm)
+    out = np.array(got[:nq], f64)
+    k = nq
+    fix = {}
+    for l, (w, sw) in zip(lids, whole):
+        off = np.asarray(got[k:k + len(w)], f64)
+        k += len(w)
+        d = _gentle_joints(sw, off)
+        if d is not None:
+            fix[l] = (pts[l], sw, d)
+    for n, (l, q) in enumerate(queries):
+        f = fix.get(int(l))
+        if f is None:
+            continue
+        a = int(sum(len(x) for x in qs[:n]))
+        out[a:a + len(qs[n])] += np.interp(_arc_of(f[0], qs[n]), f[1], f[2])
     return np.split(out, np.cumsum([len(q) for q in qs])[:-1])
+
+
+def _arc_of(line, pts):
+    """m along line (k, 2) of the nearest point of it to each of pts (m, 2). Pure."""
+    a, b = line[:-1], line[1:]
+    ab = b - a
+    L2 = np.maximum((ab * ab).sum(1), 1e-12)
+    t = np.clip(((pts[:, None, :] - a[None]) * ab[None]).sum(2) / L2[None], 0.0, 1.0)
+    d = np.hypot(*(pts[:, None, :] - (a[None] + t[..., None] * ab[None])).transpose(2, 0, 1))
+    j = np.argmin(d, axis=1)
+    s = np.r_[0.0, np.cumsum(np.sqrt(L2))]
+    return s[j] + t[np.arange(len(pts)), j] * (s[j + 1] - s[j])
+
+
+def _gentle_joints(s, off):
+    """The change (<= 0, n,) to a whole line's underpass offsets off (n,) at its arcs s (n,) that makes them rise no
+    steeper than UNDER_GRADE (deeper only: the clearance under a deck never less), its corners rounded
+    (UNDER_GENTLE_SIGMA_M) and fading in over UNDER_GENTLE_END_M from its ends (their offsets, which the roads joined
+    there share, kept); None when nothing changes. Pure."""
+    if len(off) < 3 or not np.any(off < -1e-6):
+        return None
+    g = UNDER_GRADE             # (min over j of off[j] + g |s - s[j]|: from either side, a running minimum)
+    lim = np.minimum(np.minimum.accumulate(off - g * s) + g * s,
+                     np.minimum.accumulate((off + g * s)[::-1])[::-1] - g * s)
+    ds = np.diff(s)
+    if np.all(lim >= off - 1e-6):
+        return None
+    sm = smooth_profile(lim, float(np.mean(ds)), UNDER_GENTLE_SIGMA_M)
+    cand = np.minimum(off, np.minimum(sm, 0.0))
+    u = np.clip(np.minimum(s, s[-1] - s) / UNDER_GENTLE_END_M, 0.0, 1.0)
+    d = (cand - off) * (u * u * (3.0 - 2.0 * u))
+    return d if np.any(d < -1e-6) else None
 
 
 def under_dip(d, depth, room=(math.inf, math.inf)):

@@ -435,23 +435,35 @@ def _bridge_reach(feats, i):
     puts that on the road joined there). Remembered on feats. Pure given feats."""
     memo = feats.__dict__.setdefault("_bridge_reach", {})
     got = memo.get(i)
-    if got is not None:
+    if got is not None and "busy" not in got:
         return got
+    # (one thread at a time: the placeholder below is for this thread's own recursion. Another thread planning the
+    # next cell read it as the reach, "over" 0, and _skew_decks kept the street joined to the bridge unlengthened for
+    # good: the deck ended on the trench's slope or a few metres onto the street at random, the underpass dip 2.71 or
+    # 3.10 m deep from one run to the next, test_grading's town-cut test failing every other run, 2026-10-29)
+    with feats.__dict__.setdefault("_bridge_reach_lock", threading.RLock()):
+        got = memo.get(i)
+        if got is not None:
+            return got
+        return _bridge_reach_calc(feats, i, memo)
+
+
+def _bridge_reach_calc(feats, i, memo):
     rngs = raw_level_ranges(feats, i)
-    got = {"ranges": rngs, "over": [0.0, 0.0]}
+    got = {"ranges": rngs, "over": [0.0, 0.0], "busy": True}
     memo[i] = got
     specs = road_specs(feats)
     up_w = specs[i].width if specs[i] is not None else _structure_width(feats, i)
     rings = [np.asarray(r, np.float64) for part in feats.parts(i) for r in part if len(r) >= 2]
     if up_w is None or not rings or not any(k == "bridge" for _, _, k in rngs):
-        return got
+        return _reach_done(memo, i, rngs, [0.0, 0.0])
     ring = rings[0]
     kx, ky = 111320.0 * math.cos(math.radians(float(ring[0, 1]))), 111320.0
     m = (ring - ring[0]) * [kx, ky]
     sm = np.r_[0.0, np.cumsum(np.hypot(*np.diff(m, axis=0).T))]
     L = float(sm[-1])
     if L <= 0:
-        return got
+        return _reach_done(memo, i, rngs, [0.0, 0.0])
     boxes = _feature_boxes(feats)
     out, over = [], [0.0, 0.0]
     for n, (a, b, k) in enumerate(rngs):
@@ -494,7 +506,11 @@ def _bridge_reach(feats, i):
                 over[1] = max(over[1], hi_m - L)
             a, b = max(lo_m / L, prev, 0.0), min(hi_m / L, nxt, 1.0)
         out.append((a, b, k))
-    got = memo[i] = {"ranges": out, "over": over}
+    return _reach_done(memo, i, out, over)
+
+
+def _reach_done(memo, i, ranges, over):
+    got = memo[i] = {"ranges": ranges, "over": over}
     return got
 
 
