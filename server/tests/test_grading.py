@@ -783,6 +783,14 @@ class AbutmentGapTest(unittest.TestCase):
         self.assertGreater(street(), 3.0 - 0.6, "the deck on the embankment's level: a dip of what is left")
         with unittest.mock.patch.object(grading, "ABUT_SLOPE_MAX_M", 0.0):
             self.assertLess(street(), 0.0, "the deck at the street's level: the street dug under it")
+        end = np.array([12.0, 0.0])
+        self.assertTrue(grading.Grader(FRAME, FakeMD(f), dem)._end_wide(end), "one road onto the deck: the gap fill")
+        # (a road joined at the deck's end too: each part's fill would read its own profile, the Washington Bridge's
+        # Bronx end 8 m apart: the narrow fill there)
+        j = features([[(-400, 0), (400, 0)], [(0, -200), (0, 200)], [(12, 0), (12, 150)]],
+                     ["motorway", "residential", "residential"])
+        j.rules["flags"] = f.rules["flags"]
+        self.assertFalse(grading.Grader(FRAME, FakeMD(j), dem)._end_wide(end))
 
 
 class RacewayKeepTest(unittest.TestCase):

@@ -202,6 +202,10 @@ ABUT_MAX_M = 8.0            # m filled at most
 # Not over water or a valley: a real descent to a creek bridge is no gap
 ABUT_SLOPE_MAX_M = 50.0
 ABUT_GAP_MIN_M = 2.0
+ABUT_LOOK_M = ABUT_SLOPE_MAX_M + (ABUT_FAR_M - ABUT_NEAR_M) + PROFILE_STEP   # m of the road on a wide fill reads (the
+# profiles of the parts leading onto it, their chain extensions, abutment_height: each sees the same rim, or a 5 m
+# stub onto the Washington Bridge's Bronx end, its extension 3 sigma long, saw none and stayed 8 m under the street it
+# meets, filled to the rim 47 m on, 2026-10-29)
 ABUT_STEEP_WIDE = 0.06      # a slope's grade over the one past it there (10-15 % on Kent Avenue's 34 m: a deck over a
                             # road is climbed to, so a dip down to it is the DEM's)
 
@@ -701,9 +705,15 @@ class Grader:
             if CHAIN_ON and parts:
                 try:
                     self._chain_cands(key, feats, specs)        # (this cell's own: its specs are at hand)
-                    ext = self._extensions(parts, ids)
-                    pins = self._pins(parts, ids, ext)
+                    # (ABUT_LOOK_M either way for a part onto a deck spanning a road, or whose extension runs onto one)
+                    long = [bool(abut is not None and (abut[j] == 2).any()) for j in range(len(parts))]
+                    ext = self._extensions(parts, ids, long)
                     ext_ab = self._ext_abuts(key, ext) if ABUT_FILL_ON else None
+                    more = [lg or bool(ext_ab is not None and 2 in ext_ab[j]) for j, lg in enumerate(long)]
+                    if more != long:
+                        ext = self._extensions(parts, ids, more)
+                        ext_ab = self._ext_abuts(key, ext)
+                    pins = self._pins(parts, ids, ext)
                 except Exception as e:      # each part smoothed alone rather than no grading
                     log.debug("grading: road chains of %s: %s: %s", key, type(e).__name__, e)
             pclip = []
@@ -801,10 +811,10 @@ class Grader:
             memo[key] = out
         return out
 
-    def _extensions(self, parts, ids):
+    def _extensions(self, parts, ids, long=None):
         """plan_roads' ext of a cell's parts [(lonlat, spec)] (ids: their features'): per part (before, after), the line
         from each end outward along the part the road goes on in there (earthfast.chain_extensions), 3 sigma of its
-        smoothing long, or None."""
+        smoothing long (ABUT_LOOK_M at least where long[j]: a wide fill's), or None."""
         import fast
         fast.require(69, "road chains")
         f64 = np.float64
@@ -816,10 +826,11 @@ class Grader:
         ae, an, _ = self.frame.geodetic_to_enu(alll[:, 1], alll[:, 0], 0.0)
         axy = np.stack([np.asarray(ae, f64), np.asarray(an, f64)], axis=1)
         k0 = 0
-        for (lonlat, spec), fid in zip(parts, ids):
+        for n, ((lonlat, spec), fid) in enumerate(zip(parts, ids)):
             xy = axy[k0:k0 + len(lonlat)]
             k0 += len(lonlat)
             sg = profile_sigma(spec)
+            reach = max(3.0 * sg + PROFILE_STEP, ABUT_LOOK_M) if long is not None and long[n] else 3.0 * sg + PROFILE_STEP
             for end in (0, 1):
                 line = xy if end == 0 else xy[::-1]          # from this end inward
                 p = _point_along(line, CHAIN_LOOK_M)
@@ -827,7 +838,7 @@ class Grader:
                 q_dir.append(line[0] - p)                    # the way the road goes on out of this end
                 q_class.append(int(round(sg * 1000)))
                 q_road.append(road_id(fid))
-                q_reach.append(3.0 * sg + PROFILE_STEP)
+                q_reach.append(reach)
                 q_cell.append(lonlat[0] if end == 0 else lonlat[-1])
         if q_cell:                  # (the ends' cells at once)
             qll = np.asarray(q_cell, np.float64).reshape(-1, 2)
@@ -1366,7 +1377,14 @@ class Grader:
         spans = [bridge] + bridge_chain(bridge, [b for c in cs for b in c["bridges"]])
         blo = np.min([b.min(0) for b in spans], axis=0)
         bhi = np.max([b.max(0) for b in spans], axis=0)
-        lines = [ln for ln in self._ground_table(keys, cs)[0] + [r for c in cs for r in c.get("rail_ground", ())]
+        table = self._ground_table(keys, cs)
+        # (one road leading onto it: at a junction on the deck's end each part's fill read its own profile, and a 5 m
+        # stub onto the Washington Bridge's Bronx end stayed 8 m under the street it meets, filled to the rim 47 m on;
+        # the narrow fill there as before, 2026-10-29)
+        touch = (np.hypot(*(table[4] - xy).T) <= APPROACH_TOUCH_M) | (np.hypot(*(table[5] - xy).T) <= APPROACH_TOUCH_M)
+        if int(touch.sum()) != 1:
+            return False
+        lines = [ln for ln in table[0] + [r for c in cs for r in c.get("rail_ground", ())]
                  if not ((ln.max(0) < blo).any() or (ln.min(0) > bhi).any())]
         return spans_a_road(spans, lines)
 
@@ -1481,7 +1499,7 @@ class Grader:
                 "gives_way": sunk}      # (per ground part: lowered under a bridge before its ramps rise, gives_way)
 
     def _ground_table(self, keys, cs):
-        """The ground road parts of the cells keys (cs: their _cell_enu), each once (the first copy, by its first point
+        """The ground road parts of the cells keys (cs: their _cell_enu), each once (the first copy, by its end points
         and length), in their order: (lines, half widths, boxes' lo (n, 2), hi (n, 2), first points, last points,
         gives way (n,) bool). Kept per cell set (every bridge end near them asks: a loop over each part per end was
         most of _lift_approaches, 2026-10-25)."""
@@ -1494,7 +1512,9 @@ class Grader:
         lines, halves, sunk, seen = [], [], [], set()
         for c in cs:
             for (line, half, _cls), way in zip(c["ground"], c.get("gives_way") or [False] * len(c["ground"])):
-                key = (round(float(line[0, 0]), 1), round(float(line[0, 1]), 1), len(line))
+                # (its last point too: two roads from one node with as many points, two 2-point segments, were one)
+                key = (round(float(line[0, 0]), 1), round(float(line[0, 1]), 1), round(float(line[-1, 0]), 1),
+                       round(float(line[-1, 1]), 1), len(line))
                 if key in seen:
                     continue
                 seen.add(key)
@@ -2303,7 +2323,7 @@ def abutment_height(end, approaches, z_at, lines=(), wide=False):
         if len(line) < 2:
             continue
         at_end = bool(np.hypot(*(line[-1] - end)) <= np.hypot(*(line[0] - end)))
-        on = _goes_on(line, not at_end, lines, ABUT_FAR_M + PROFILE_STEP) if lines else None
+        on = _goes_on(line, not at_end, lines, ABUT_LOOK_M if wide else ABUT_FAR_M + PROFILE_STEP) if lines else None
         # (on runs out of the part's far end, the one away from the bridge: before its first point when the bridge is
         # at its last. Joined the other way round, past the bridge end, the profile's end sample was the next road's
         # ground ~40 m off: Fort Hamilton Parkway's abutment over Brooklyn's Prospect Expressway read 16.7 m where the
