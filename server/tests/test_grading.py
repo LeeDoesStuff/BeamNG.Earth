@@ -753,6 +753,38 @@ class TunnelWallTest(unittest.TestCase):
             self.assertLess(p.road_half, p.half, "the carriageway's half, not the shoulder's")
 
 
+class AbutmentGapTest(unittest.TestCase):
+    """The 10 m DEM spreads an embankment's end over 30-40 m: a short deck over a street can end at the bottom of the
+    DEM's gap, its ground flat there and the slope up to the embankment 15-50 m out (the Brooklyn-Queens Expressway over
+    Kent Avenue: the deck at the street's 3.5 m, Kent Avenue dug 7 m under it into a pit, 2026-10-29)."""
+
+    def test_a_deck_over_a_road_fills_the_gap_to_its_rim(self):
+        d = np.arange(0.0, 120.0, 2.0)
+        gap = np.where(d < 15, 3.0, np.minimum(3.0 + (d - 15) * 0.2, 10.0))
+        np.testing.assert_array_equal(grading.fill_abutment(gap, False, 2.0), gap, "the near fill alone: nothing")
+        wide = grading.fill_abutment(gap, False, 2.0, wide=True)
+        self.assertAlmostEqual(float(wide[0]), 10.0, delta=0.05, msg="filled to the embankment's level")
+        np.testing.assert_allclose(grading.fill_abutment(gap[::-1], True, 2.0, wide=True)[::-1], wide)
+        steady = 3.0 + 0.1 * d
+        np.testing.assert_array_equal(grading.fill_abutment(steady, False, 2.0, wide=True), steady, "a descent: no gap")
+        shallow = np.where(d < 15, 9.0, np.minimum(9.0 + (d - 15) * 0.2, 10.0))
+        np.testing.assert_array_equal(grading.fill_abutment(shallow, False, 2.0, wide=True), shallow, "1 m: no gap")
+
+    def test_the_street_under_a_motorway_on_its_embankment_stays(self):
+        def dem(la, lo):        # an embankment at 10 m, the street's gap 3 m, 40 m wide at the bottom, 30 m slopes
+            x = np.abs(np.asarray(FRAME.geodetic_to_enu(np.asarray(la), np.asarray(lo), 0.0)[0]))
+            return np.where(x >= 50, 10.0, np.where(x <= 20, 3.0, 3.0 + (x - 20) / 30 * 7.0))
+        f = features([[(-400, 0), (400, 0)], [(0, -200), (0, 200)]], ["motorway", "residential"])
+        f.rules["flags"] = rules([(0, "is_bridge", 375.0 / 800.0, 412.0 / 800.0)])     # (-25 .. 12 m: in the gap)
+        la, lo, _ = FRAME.enu_to_geodetic(np.array([0.0]), np.array([0.0]), 0.0)
+
+        def street():
+            return float(grading.Grader(FRAME, FakeMD(f), dem).apply(la, lo, dem(la, lo))[0])
+        self.assertGreater(street(), 3.0 - 0.6, "the deck on the embankment's level: a dip of what is left")
+        with unittest.mock.patch.object(grading, "ABUT_SLOPE_MAX_M", 0.0):
+            self.assertLess(street(), 0.0, "the deck at the street's level: the street dug under it")
+
+
 class RacewayKeepTest(unittest.TestCase):
     def test_track_surface_is_the_terrain(self):
         """A road crossing a racetrack at grade: on the track (its carriageway + margin) the terrain stays as it is

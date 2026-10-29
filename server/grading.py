@@ -194,6 +194,16 @@ ABUT_FAR_M = 40.0           # ... against its grade from ABUT_NEAR_M to this far
 ABUT_STEEP = 0.15           # a fall this much steeper than that grade, near the end: the valley's side, not the road
 ABUT_MIN_M = 0.3            # m: a smaller fill at the end is left out
 ABUT_MAX_M = 8.0            # m filled at most
+# ... and where the deck spans a road or a track (wide): a dip at the end up to ABUT_SLOPE_MAX_M wide, ABUT_GAP_MIN_M
+# deep at least, is filled to its rim. The 10 m DEM spreads an embankment's end over 30-40 m: the Brooklyn-Queens
+# Expressway on its embankment over Kent Avenue (40.6999,-73.9617) has a 37 m deck whose end lies at the bottom of the
+# DEM's 100 m wide gap, 15 m of flat street level and then the slope up to the embankment 40 m out; nothing was filled,
+# the deck sat at the street's 3.5 m, and Kent Avenue was dug 7 m under it into a pit (connect_check, 2026-10-29).
+# Not over water or a valley: a real descent to a creek bridge is no gap
+ABUT_SLOPE_MAX_M = 50.0
+ABUT_GAP_MIN_M = 2.0
+ABUT_STEEP_WIDE = 0.06      # a slope's grade over the one past it there (10-15 % on Kent Avenue's 34 m: a deck over a
+                            # road is climbed to, so a dip down to it is the DEM's)
 
 
 def median_profile(z, step, width):
@@ -296,7 +306,8 @@ def plan_road(frame, lonlat, spec, elev):
 
 def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True, ext_abut=None):
     """plan_road for many (lonlat, spec) parts with one elev call (its cost is per call); abut: per part (start, end)
-    flags, the ends leading onto a bridge (fill_abutment); ext: per part (before, after), the lines (k, 2) in the frame
+    flags, the ends leading onto a bridge (fill_abutment; 2: one spanning a road or a track, wide); ext: per part
+    (before, after), the lines (k, 2) in the frame
     from its start / end outward along the part the road goes on in (Grader._extensions), or None: their ground is in
     the part's profile smoothing; ext_abut: per part (before, after) flags, that extension ends on a bridge (its ground
     filled there as the part leading onto it is); pins: per part (start, end) heights its ends are held at, or None
@@ -351,7 +362,7 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True, ex
             # ABUT_FAR_M from the abutment, further than a short part reaches)
             for at_end in (False, True):
                 if ab[int(at_end)]:
-                    zx = fill_abutment(zx, at_end, step)
+                    zx = fill_abutment(zx, at_end, step, abut[j][int(at_end)] == 2)
         # (an extension running on to a bridge's abutment: its ground filled there as the part it runs along fills
         # it, so the two plans see the same ground. Raw, the DEM's smoothed trench wall at the abutment was in this
         # part's smoothing and not in that part's: Seeley Street planned 1.4 m under the DEM at its node with 18th
@@ -359,9 +370,9 @@ def plan_roads(frame, parts, elev, abut=None, ext=None, pins=None, cuts=True, ex
         # met the DEM: a 1.4 m spread at the junction, 2026-10-29)
         if ext_abut is not None and ABUT_FILL_ON:
             if ext_abut[j][0] and nb:
-                zx = fill_abutment(zx, False, step)
+                zx = fill_abutment(zx, False, step, ext_abut[j][0] == 2)
             if ext_abut[j][1] and na:
-                zx = fill_abutment(zx, True, step)
+                zx = fill_abutment(zx, True, step, ext_abut[j][1] == 2)
         pin = pins[j] if pins is not None else (None, None)
         if pin[0] is not None and not nb and not ab[0]:     # (the end sample held: the smoothing keeps an end's height)
             zx = zx.copy()
@@ -679,7 +690,11 @@ class Grader:
                 try:
                     pe = np.array([[r[0], r[-1]] for r, _sp in parts], np.float64).reshape(-1, 2)
                     e, n, _ = self.frame.geodetic_to_enu(pe[:, 1], pe[:, 0], 0.0)
-                    abut = self._abut_ends(key, np.stack([np.asarray(e), np.asarray(n)], axis=1)).reshape(-1, 2)
+                    pxy = np.stack([np.asarray(e), np.asarray(n)], axis=1)
+                    abut = self._abut_ends(key, pxy).astype(np.int64)
+                    for m in np.flatnonzero(abut):      # (2: the deck there spans a road or a track)
+                        abut[m] = 2 if self._end_wide(pxy[m]) else 1
+                    abut = abut.reshape(-1, 2)
                 except Exception as e:      # no fills rather than no grading
                     log.debug("grading: abutments of %s: %s: %s", key, type(e).__name__, e)
             ext = pins = ext_ab = None
@@ -844,9 +859,9 @@ class Grader:
         hit = self._abut_ends(key, np.array([p for _j, _e, p in far], np.float64))
         if not hit.any():
             return None
-        out = [[False, False] for _ in ext]
-        for (j, e, _p), h in zip(far, hit):
-            out[j][e] = bool(h)
+        out = [[0, 0] for _ in ext]
+        for (j, e, p), h in zip(far, hit):
+            out[j][e] = (2 if self._end_wide(p) else 1) if h else 0
         return [tuple(o) for o in out]
 
     def _cand_arrays(self, key, cands):
@@ -1167,7 +1182,7 @@ class Grader:
             got = ez.get(k2)            # as its ramps could take it; asked only for one a road crosses under: every
             if got is None:             # span's took 2 s a Canton cell, 2026-10-25)
                 touch = (np.hypot(*(first - end).T) <= APPROACH_TOUCH_M) | (np.hypot(*(last - end).T) <= APPROACH_TOUCH_M)
-                got = abutment_height(end, [lines[m] for m in np.flatnonzero(touch)], z_at, lines)
+                got = abutment_height(end, [lines[m] for m in np.flatnonzero(touch)], z_at, lines, self._end_wide(end))
                 if not fixed:
                     got += self._end_raised(np.asarray(end, f64))
                 ez[k2] = got
@@ -1315,6 +1330,45 @@ class Grader:
             log.debug("grading: approach at %s: %s: %s", k, type(e).__name__, e)
         with self.lock:
             return self.end_cache.setdefault(k, res)
+
+    def _end_wide(self, xy):
+        """Does the bridge whose end is at road end xy (APPROACH_TOUCH_M) span a ground road or a drawn track away from
+        its chain's free ends (fill_abutment's wide)? The cells and lines _end_lift_calc reads; cached per point."""
+        k = (round(float(xy[0]) * 2), round(float(xy[1]) * 2))
+        with self.lock:
+            memo = self.__dict__.setdefault("wide_cache", {})
+            if k in memo:
+                return memo[k]
+        res = False
+        try:
+            res = self._end_wide_calc(np.asarray(xy, np.float64)[:2])
+        except Exception as e:      # (the narrow fill rather than no grading)
+            log.debug("grading: deck span at %s: %s: %s", k, type(e).__name__, e)
+        with self.lock:
+            return memo.setdefault(k, res)
+
+    def _end_wide_calc(self, xy):
+        la, lo, _ = self.frame.enu_to_geodetic(np.array([xy[0]]), np.array([xy[1]]), 0.0)
+        home = mapcells.cell_of(float(la[0]), float(lo[0]))
+        hc = self._cell_enu(home, ground=False)
+        if not len(hc["ends"]):
+            return False
+        d = np.hypot(hc["ends"][:, 0] - xy[0], hc["ends"][:, 1] - xy[1])
+        hit = np.flatnonzero(d <= APPROACH_TOUCH_M)
+        if not len(hit):
+            return False
+        bridge = hc["bridges"][hc["end_of"][int(hit[0])]]
+        lam, lom, _ = self.frame.enu_to_geodetic(bridge[:, 0], bridge[:, 1], 0.0)
+        pad = 50.0 / 111320.0
+        padlon = pad / max(0.05, math.cos(math.radians(float(np.mean(lam)))))
+        keys = sorted(set(mapcells.cells_for_points(lam, lom, pad, padlon)) | {home}, key=str)
+        cs = [self._cell_enu(k) for k in keys]
+        spans = [bridge] + bridge_chain(bridge, [b for c in cs for b in c["bridges"]])
+        blo = np.min([b.min(0) for b in spans], axis=0)
+        bhi = np.max([b.max(0) for b in spans], axis=0)
+        lines = [ln for ln in self._ground_table(keys, cs)[0] + [r for c in cs for r in c.get("rail_ground", ())]
+                 if not ((ln.max(0) < blo).any() or (ln.min(0) > bhi).any())]
+        return spans_a_road(spans, lines)
 
     def _cell_enu(self, k, ground=True):
         """Cell k's road parts in the anchor frame, made once: {"bridges": [line (k, 2)], "ends": (n, 2) bridge end
@@ -1514,7 +1568,7 @@ class Grader:
             la_, lo_, _ = self.frame.enu_to_geodetic(p[:, 0], p[:, 1], 0.0)
             return np.asarray(self.elev(la_, lo_), np.float64)
         # (the abutment as the approaches' plans fill it, at the end asked for; the other end's lift is not returned)
-        ez = abutment_height(xy, [ln for ln, _h in approaches], z_at, [lines[i] for i in near])
+        ez = abutment_height(xy, [ln for ln, _h in approaches], z_at, [lines[i] for i in near], self._end_wide(xy))
         end_z = tuple(ez if np.hypot(*(e - xy)) <= APPROACH_TOUCH_M else None for e in (bridge[0], bridge[-1]))
         for end, lift in bridge_lifts(bridge, bridges, ground, z_at, chain, rails, sunk, end_z):
             if np.hypot(*(end - xy)) <= APPROACH_TOUCH_M:
@@ -1987,6 +2041,20 @@ def _span_key(b):
             len(b))
 
 
+def spans_a_road(spans, lines):
+    """Does a bridge chain (spans: its parts (k, 2)) cross over one of lines (ground roads, tracks) farther than
+    APPROACH_MIN_CROSS_M from each of its free ends (a road meeting a deck at its end is a junction there)? Pure."""
+    spans = [np.asarray(b, np.float64)[:, :2] for b in spans]
+    if not spans or not lines:
+        return False
+    ends = [p for n, b in enumerate(spans) for p in (b[0], b[-1])
+            if not any(min(np.hypot(*(o[0] - p)), np.hypot(*(o[-1] - p))) < 0.75 for m, o in enumerate(spans) if m != n)]
+    for c in roadsmod._crossings(spans, list(lines)):
+        if all(np.hypot(*(np.asarray(c[2]) - e)) >= APPROACH_MIN_CROSS_M for e in ends):
+            return True
+    return False
+
+
 def bridge_chain(line, all_bridges):
     """The bridge parts joined to line through their ends (within 0.75 m), line itself excluded. Pure."""
     line = np.asarray(line, np.float64)[:, :2]
@@ -2113,12 +2181,52 @@ def bridge_lifts(line, all_bridges, ground_lines, z_at, chain=None, rail_lines=(
     return out
 
 
-def fill_abutment(z, at_end, step=PROFILE_STEP):
+def fill_abutment(z, at_end, step=PROFILE_STEP, wide=False):
     """The raw profile z (a sample every step m) of a road leading onto a bridge at its first (at_end False) or last
     sample, its last ABUT_NEAR_M filled up to the straight grade of the stretch from there to ABUT_FAR_M where they
-    fall at least ABUT_STEEP more steeply than it toward the bridge (ABUT_FILL_ON). Returns z itself when nothing is
-    filled. Pure."""
+    fall at least ABUT_STEEP more steeply than it toward the bridge (ABUT_FILL_ON); wide (the deck spans a road or a
+    track): a dip at the end up to ABUT_SLOPE_MAX_M wide filled to its rim too (_fill_gap). Returns z itself when
+    nothing is filled. Pure."""
     z = np.asarray(z, np.float64)
+    q = _fill_near(z, at_end, step)
+    if not wide:
+        return q
+    p = z[::-1] if at_end else z
+    g = _fill_gap(p, np.arange(len(p)) * step, step)
+    if g is None:
+        return q
+    g = g[::-1] if at_end else g
+    return np.maximum(q, g)
+
+
+def _fill_gap(p, d, step):
+    """p (the profile from the bridge end outward, at d m) with the dip at its start filled to the dip's rim: the first
+    ABUT_FAR_M - ABUT_NEAR_M stretch from ABUT_NEAR_M on (to ABUT_SLOPE_MAX_M) with no sample ABUT_STEEP_WIDE over its
+    own grade and a slope ABUT_STEEP_WIDE over that grade before it, that grade carried back to the end over what lies
+    under it, ABUT_MAX_M at most; None when there is none or the end is not ABUT_GAP_MIN_M under it. Pure."""
+    span = ABUT_FAR_M - ABUT_NEAR_M
+    rise = np.diff(p) / step                    # (outward: the ground climbing away from the bridge)
+    for s0 in np.arange(ABUT_NEAR_M, ABUT_SLOPE_MAX_M + 1e-9, step):
+        w = (d >= s0) & (d <= s0 + span)
+        if w.sum() < 4:
+            return None
+        b, a = np.polyfit(d[w], p[w], 1)
+        if (rise[w[1:] & w[:-1]] > b + ABUT_STEEP_WIDE).any():
+            continue                            # (still on the slope)
+        m = d < s0
+        if (rise[:int(m.sum())] - b).max() < ABUT_STEEP_WIDE:
+            continue                            # (no slope before it: the dip's rim is farther, if there is one)
+        e = a + b * d[m]
+        if e[0] - p[0] < ABUT_GAP_MIN_M:
+            return None
+        q = p.copy()
+        q[m] = np.minimum(np.maximum(p[m], e), p[m] + ABUT_MAX_M)
+        return q
+    return None
+
+
+def _fill_near(z, at_end, step):
+    """fill_abutment's last ABUT_NEAR_M. Pure."""
     p = z[::-1] if at_end else z
     d = np.arange(len(p)) * step
     far = (d >= ABUT_NEAR_M) & (d <= ABUT_FAR_M)
@@ -2176,7 +2284,7 @@ def _goes_on(line, at_end, lines, reach):
     return best
 
 
-def abutment_height(end, approaches, z_at, lines=()):
+def abutment_height(end, approaches, z_at, lines=(), wide=False):
     """m: the ground at a bridge end (xy (2,)) as the plans of the roads leading onto it (approaches: lines (k, 2),
     an end within APPROACH_TOUCH_M of it) have it: the DEM there or, higher, the fill of the approach's last
     ABUT_NEAR_M (fill_abutment, as plan_roads applies it to the part with the road it goes on in past its other end:
@@ -2184,7 +2292,8 @@ def abutment_height(end, approaches, z_at, lines=()):
     bridge range stops short of the real abutment, or the DEM smooths the trench's wall into a slope (11th Avenue
     over Brooklyn's Prospect Expressway: 31.6 m at the bridge's end where the street is 38.7 m, 2026-10-29): on it
     the ramps lifted a street already filled, 7 m into a hump, and the underpass dip dug the expressway 5 m deeper
-    than the deck needed. z_at(xy (n, 2)) -> ground m. Pure given z_at."""
+    than the deck needed. wide: the deck spans a road or a track (fill_abutment). z_at(xy (n, 2)) -> ground m. Pure
+    given z_at."""
     end = np.asarray(end, np.float64)[:2]
     best = float(z_at(end[None])[0])
     if not ABUT_FILL_ON:
@@ -2208,7 +2317,7 @@ def abutment_height(end, approaches, z_at, lines=()):
         xy, _ = resample(line, step)
         if len(xy) < 2:
             continue
-        z = fill_abutment(np.asarray(z_at(xy), np.float64), at_end, step)
+        z = fill_abutment(np.asarray(z_at(xy), np.float64), at_end, step, wide)
         best = max(best, float(z[-1] if at_end else z[0]))
     return best
 
