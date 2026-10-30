@@ -50,15 +50,15 @@ go back as PRs.
 | ... only where one ground road leads onto the deck's end, and the parts leading onto it and their extensions read `ABUT_LOOK_M` of road, so every plan there sees the same rim: at the Washington Bridge's Bronx end (40.84511,-73.92253) a 5 m stub (be9b3e6d) and the street it meets (97824669) filled differently, 8 m apart, a 2.0 m wall (new against main on the Cross Bronx corridor). `_ground_table` keyed its parts by their first point and point count, so two 2-point segments from one node were one road (found by the junction test): now by both ends | `grading.py` `_end_wide_calc`, `ABUT_LOOK_M`, `_extensions(long=)`, `_make_cell`, `abutment_height`, `_ground_table` | `test_grading.AbutmentGapTest.test_the_street_under_a_motorway_on_its_embankment_stays` |
 | An abandoned railway's bridge pieces no longer make the roads under them dip (it is still drawn, and road decks over its track still clear it): Brooklyn's Jay Street Connecting Railroad in DUMBO has a 117 m bridge piece whose ends' ground is the street's, and Adams and York Streets (40.70189,-73.98860) were dug 7 m under it | `grading.py` `_cell_enu_calc` | `test_grading.AbandonedRailBridgeTest` |
 
-Not yet tested in game (user testing as of 2026-10-28; the town-cut fixes of 2026-10-29 not yet).
+Not yet tested in game (user testing as of 2026-10-28; none of the 2026-10-29/30 fixes yet: see NEXT, "Where to drive").
 
 `depth_check.py` on 2026-10-29 (cell 40.6476,-73.9770, both 11th Ave decks and the ramp bridge): every deck fits with
 the ends level with the street. Two chains in the cell log `bridge clearance below 4.9 m target`: Seeley Street
 (`d3a5ba33`, 4.54 m) and `0d19bc63` (4.79 m) — the deck solver's own abutment/grade limits, a semi (4.1 m) still passes.
 
-## NEXT: humps over the Prospect Expressway — reopened after review (2026-10-29)
+## NEXT: humps over the Prospect Expressway, then the corridors (2026-10-29/30)
 
-### Findings, second pass (2026-10-29)
+### Findings: why the town cut missed Seeley St and half-fixed Fort Hamilton Pkwy
 
 `approach_check.py` reproduced the review's numbers first (Seeley ad9c961c end 1: 3.8 / 2.9 / 1.8 both off and on;
 Fort Hamilton Pkwy ddcfd6f2: 6.0 / 3.0 / -0.3 off, 3.5 / 1.3 / -0.3 on).
@@ -66,76 +66,113 @@ Fort Hamilton Pkwy ddcfd6f2: 6.0 / 3.0 / -0.3 off, 3.5 / 1.3 / -0.3 on).
 - **Seeley St ad9c961c does not cross the expressway.** Its deck (45 m, 40.6545,-73.9764) spans "Prospect Avenue"
   (26162ade, tertiary) beside the IND Culver tunnel, in a cut of its own in the DEM (Seeley 32.5 m both sides, Prospect
   Ave 28.0-28.3 m under it on a steady 7 % grade). The only ground road under it is that tertiary, `gives_way` False:
-  the town cut was never meant to reach it, and its ramps are the clearance over a city street (7.25 m deck over the
-  road under, 4.3 m in the DEM). Open problem 7 below.
-- **Fort Hamilton Pkwy ddcfd6f2 is no ramp.** Both ground parts under it (3ec1b883, 59a150c6) give way (`gives_way`
-  True), and `bridge_lifts` raises neither end. Its "lift at 12 m" is `fill_abutment` carrying the street's own ~4 %
-  rise over the DEM's trench slope, which reaches 16 m back from Overture's bridge end there (DEM 17.8 m at 20 m, 16.8 m
-  at 12 m, 14.4 m at the end). The graded street climbs steadily 16.5 → 18.5 m to the deck and on to 19.9 m, as the DEM
-  does on the two sides. approach_check's lift at 12 m reads the slope as the street; `connect_check.py`'s `hump`
-  (the deck end over the line of the street's own ground 20-60 m past it) is the measure for it: under 1 m on, 2.9 m off.
-- **Open problem 6 is not the cause here:** `town_check.py`'s 9 carriageways all get the wall, and every Prospect Expwy
-  part under a street deck in the corridor gives way.
-- Found on the way, fixed (Done table): `abutment_height`'s swapped join (the trench dug ~2 m too deep), the chain
-  extension's raw trench slope (1.4 m between two plans at Seeley / 18th St), the junction blend (12-18 % on the Fort
-  Hamilton exit), the `_bridge_reach` race (decks ending at random from run to run).
-- `connect_check.py` and approach_check compare deck heights with the ground in the frame's up (the earth's curvature
-  off: 7 cm 930 m from the frame's origin), as the decks have them.
+  the town cut was never meant to reach it. Open problem 7.
+- **Fort Hamilton Pkwy ddcfd6f2 is no ramp.** Both ground parts under it (3ec1b883, 59a150c6) give way, and
+  `bridge_lifts` raises neither end. Its "lift at 12 m" is `fill_abutment` carrying the street's own ~4 % rise over the
+  DEM's trench slope, which reaches 16 m back from Overture's bridge end there (DEM 17.8 m at 20 m, 16.8 m at 12 m, 14.4
+  m at the end). The graded street climbs steadily 16.5 → 18.5 m to the deck and on to 19.9 m, as the DEM does on the
+  two sides. approach_check's lift at 12 m reads the slope as the street; connect_check's `hump` (the deck end over the
+  line of the street's own ground 20-60 m past it) is the measure for it: under 1 m with the cut on, 2.9 m off.
+- **Open problem 6 is not the cause:** `town_check.py`'s 9 carriageways all get the wall, and every Prospect Expwy part
+  under a street deck in the corridor gives way.
+- The checks compare deck heights with the ground in the frame's up (the earth's curvature off: 7 cm 930 m from the
+  frame's origin), as the decks have them; approach_check's "street - deck" did not (small near `--at`).
 
-Review of commit `2430373` on real data (Windows, same cache layout): tests pass (391, both road modes); the expressway
-drives fine (max grade 7.7 %, off 7.0 %; curvature over 20 m <= 0.0025 /m, ~0.12 g at 80 km/h). But the street ramps
-are only partly gone, and the numbers in the table above / the commit message did not reproduce (11th Ave decks
-37.8-39.5 m, not 36.8-37.6). Keep this branch unmerged and commit here.
+### approach_check.py, final (2026-10-30, cell 40.6476,-73.9770, town cut on)
 
-**Measure with `tools/nyc/approach_check.py`**, not `depth_check.py`: depth_check's "ends against the street 12 m on"
-takes a joint between two deck parts for an end, and its DEM-only depth is not what the game builds (the "5-7 m humps on
-11th Ave" in the old problem 1 was that estimate: graded, 11th Ave was already level on main). approach_check prints,
-for every free deck end, the lift (graded street minus raw DEM) 2/12/40/80/120 m past it, town cut off and on, and the
-expressway's profile. Lift at 2 m alone is the abutment fill over the DEM's smoothed wall; at 12 m and on, a ramp.
-Second anchor: `--at 40.66556,-73.99318 --bbox 40.655,-74.005,40.675,-73.982` (there: only motorway links and service
-roads lift, as expected).
+Lift over the DEM at 2 / 12 / 40 m past each free deck end, and the street - deck at 12 m:
 
-Lift at 2 / 12 / 40 m, main -> this branch:
-
-| Street (fid) | main | branch |
+| Street (fid) | lift 2 / 12 / 40 m | street - deck at 12 m |
 |---|---|---|
-| 11th Ave (5a6d064d, 729d02a3, cc59f431) | ~0 from 12 m | same, decks 0.4-0.7 m lower |
-| Seeley St (d3a5ba33, west end) | sag, street 8 m over the deck | fixed |
-| Seeley St (ad9c961c, end 1) | 5.2 / 4.3 / 3.6 | 3.8 / 2.9 / 1.8 — **identical with the town cut off**: not reached by it |
-| Seeley St (ad9c961c, end 2) | 2.9 / 2.9 / 2.0 | unchanged |
-| Fort Hamilton Pkwy (ddcfd6f2) | 5.6 / 2.8 / -0.4 | 3.5 / 1.3 / -0.3 |
-| Caton Ave (0d19bc63) | ~0 | ~0 |
+| 11th Ave (5a6d064d) | 5.2 / -0.1 / -0.0 (deck 37.76 m, 38.23 off) | -0.2 |
+| 11th Ave (cc59f431, 729d02a3) | 4.1 / 0.2 / -0.0; 3.8 / 0.0 / 0.0 | 0.0; 0.2 |
+| Fort Hamilton Pkwy (ddcfd6f2) | 3.5 / 1.3 / -0.3 (the fill over the DEM's slope, above); other end -0.0 / -0.0 / -0.1 | -0.4; -0.0 |
+| Seeley St (d3a5ba33, over the expressway) | 0.0 / 0.0 / -0.1; 1.7 / -0.1 / 0.5 | -0.1; -0.0 |
+| Caton Ave (0d19bc63) | 0.0 / 0.0 / 0.2; 0.0 / -0.2 / -0.3 | 0.1; -0.2 |
+| Seeley St (ad9c961c, over Prospect Ave, not the expressway) | 3.6 / 2.6 / 1.6; 2.9 / 2.9 / 2.0 | open problem 7 |
 
-To do, in order:
-1. Find *why* the town cut misses Seeley St (ad9c961c) and only half-fixes Fort Hamilton Pkwy — check `gives_way` of the
-   ground parts under them, don't assume. Likely open problem 6 (the parts beside Prospect Park count as rural): then fix
-   the urban classification, not the dip.
-2. Other cities: `gives_way` applies to every urban motorway/trunk. Run approach_check (`--at`, `--bbox`, `--motorway`)
-   at one or two non-NYC urban motorways with street overpasses (Commerce St over I-95, Springfield VA, upstream #138;
-   I-95 by Canton, Baltimore): grade, curvature, dip depth and street lifts with the cut off vs on. No dip a motorway
-   didn't need.
-3. **Roads connect and make sense** (the user, 2026-10-29: "ensure that roads connect properly and make sense"). Every
-   fix here moves road heights, so check the whole network around it, not only the deck you fixed. Write
-   `tools/nyc/connect_check.py` (graded ground and solved decks as approach_check builds them, same `--at` / `--bbox`)
-   and report, off vs on:
-   - **junctions:** at every node two or more ground roads share (`junctions.NODE_TOL`), the spread of their graded
-     heights: no step at an intersection (target <= 5 cm);
-   - **deck to street:** the step where a deck meets its approach (approach_check's street - deck at 2 m: <= 5 cm), and
-     no deck end left in the air or buried (a free end with no ground road within `APPROACH_TOUCH_M`);
-   - **ramps:** motorway links meet their mainline at its height and grade (no step, no kink over 2 %);
-   - **divided roads:** paired one-way carriageways (and a street's two halves around a median) at about the same height
-     side by side, unless the DEM says otherwise;
-   - **made-up hills:** street grades the DEM doesn't have (graded grade over the DEM's own + 2 %), and city-street
-     curvature over 20 m above 0.01 /m (~0.12 g at 40 km/h);
-   - **nothing dropped:** every map road's ground part still drawn in the road tiles (`roads.build_tile` carriageways vs
-     `roads.ground_parts`), joined where the map joins them (chunk ends within 0.5 m), no road through a building or
-     under the trench wall.
-   List each failure with the street names and lat/lon so the user can drive there.
-4. Put approach_check's and connect_check's real output in this file; drop the numbers that didn't reproduce.
+Prospect Expwy ground parts: max grade 7.6 % (c496c742; off 7.1), max curvature over 20 m 0.0023 /m (6df52be8), lowest
+1.27-2.51 m under the DEM; dips under the street decks 0.27-0.91 m (on - off; 1.32-2.79 m before `abutment_height`'s
+fix).
 
-Done when: no city street (residential .. primary) over the Prospect Expressway lifts more than 1 m at 12 m past a free
-deck end; the expressway stays within 7.7 % and 0.003 /m; connect_check finds no new failure against main (and the old
-ones are listed); no regression in the other cities; tests pass.
+**Done criteria:** streets over the Prospect Expwy lift at most 0.2 m at 12 m past a free deck end, but for Fort
+Hamilton Pkwy's 1.3 m, which is the fill over the DEM's 16 m smoothed slope (the street rises steadily to the deck, its
+hump over its own line under 1 m: connect_check finds none on the corridor with the cut on, 2.9 m off); the expressway
+within 7.7 % and 0.003 /m; connect_check's Prospect corridor: no wall, step, deck, gap or hump (main: 2 walls, 4 steps, 3
+humps), one hill (Seeley ad9c961c's ramp, open problem 7). Other cities and corridors below.
+
+### Other cities: town cut off vs on, and against main (connect_check, 2026-10-29/30)
+
+- **Commerce St over I-95, Springfield VA** (38.7806,-77.1777): the cut changes one link only, Shirley Hwy's b5a0b58e
+  beside its mainline 0.87 → 0.49 m; Commerce St keeps its ramps (5.8 / 4.7 / 2.8 m: the motorway under it is not
+  urban there, so no dip it doesn't need). Against main: walls 20 → 22, steps 4 → 9: two 0.33-0.43 m walls and five
+  0.10-0.19 m steps on Franconia Rd's unnamed carriageways (38dd52e7, 75115583, 38.7784,-77.1790), beside its main
+  carriageways that the gap fill now carries to their decks over Loisdale Rd. Pre-existing and left: Franconia Rd's
+  secondary carriageways 7-8 m under the DEM (38.7779,-77.1754): its twin carriageways' decks over Commerce St /
+  Loisdale Rd sit at the street's level, each one's ramps held down by the other carriageway beside it
+  (`approach_add`'s fill-slope cap), so the dip under them took 7 m and spread through the junctions.
+- **I-95 by Canton, Baltimore** (39.2830,-76.5600): the cut fixes Eastern Ave's 1.6 m hump (6f0e90b2) and adds none.
+  Against main: walls 25 → 22; one new 0.37 m wall (Grundy St 9dea1205 beside a service road) and two 0.18 m steps on
+  O'Donnell St beside the rail bed. Pre-existing: the dips under Eastern Ave's decks over the rail yard spread hundreds of
+  metres through the street grid (South Macon St 3.3 m under the DEM, 39.2817,-76.5573), the same joined-dip spread.
+
+### Corridors (connect_check --corridor, roads within 80 m of the named road; main → branch, 2026-10-30)
+
+| corridor | wall main → branch | step main → branch | deck main → branch | gap main → branch | hump main → branch | hill main → branch | new walls/steps/decks/gaps | gone |
+|---|---|---|---|---|---|---|---|---|
+| bqe | 67 → 44 | 25 → 24 | 7 → 0 | 0 → 0 | 29 → 2 | 16 → 5 | 15 | 46 |
+| gowanus | 15 → 7 | 9 → 4 | 0 → 0 | 0 → 0 | 4 → 5 | 1 → 1 | 4 | 17 |
+| prospect | 2 → 0 | 4 → 0 | 0 → 0 | 0 → 0 | 3 → 0 | 1 → 1 | 0 | 6 |
+| flatbush | 2 → 2 | 2 → 1 | 0 → 0 | 6 → 0 | 1 → 1 | 0 → 0 | 0 | 7 |
+| 4thave | 19 → 3 | 1 → 0 | 0 → 0 | 1 → 0 | 0 → 0 | 1 → 1 | 0 | 18 |
+| oceanpkwy | 0 → 0 | 3 → 0 | 0 → 0 | 0 → 0 | 1 → 0 | 0 → 0 | 0 | 3 |
+| fdr | 20 → 16 | 5 → 8 | 0 → 0 | 0 → 0 | 0 → 0 | 0 → 0 | 3 | 4 |
+| broadway | 22 → 22 | 6 → 6 | 0 → 0 | 1 → 0 | 4 → 1 | 6 → 4 | 4 | 5 |
+| harlemriver | 13 → 10 | 11 → 9 | 0 → 0 | 0 → 0 | 7 → 5 | 3 → 3 | 2 | 7 |
+| crossbronx | 38 → 12 | 16 → 10 | 11 → 3 | 0 → 0 | 23 → 11 | 15 → 6 | 5 | 45 |
+| concourse | 36 → 30 | 16 → 15 | 0 → 0 | 0 → 0 | 3 → 3 | 15 → 13 | 7 | 14 |
+| lie | 34 → 15 | 33 → 17 | 8 → 0 | 0 → 0 | 9 → 4 | 4 → 1 | 7 | 50 |
+| queensblvd | 23 → 19 | 12 → 13 | 0 → 0 | 0 → 0 | 5 → 2 | 3 → 2 | 3 | 6 |
+| gcp | 35 → 32 | 25 → 17 | 1 → 0 | 0 → 0 | 24 → 10 | 6 → 1 | 10 | 22 |
+| siexpwy | 12 → 1 | 8 → 3 | 6 → 0 | 0 → 0 | 4 → 0 | 0 → 0 | 3 | 25 |
+
+"new": walls, steps, deck and gap failures on the branch with no failure of the same kind on the same road within 40 m
+on main (most are a main failure moved or a small one: 0.3-0.9 m, beside another road's plan). The worst new one: a
+2.1 m wall on the GCP's flyover link at Flushing Meadows (132cfdea, 40.75845,-73.85301), beside the parkway (88c90ac9)
+dipping 2.5 m under its deck: two roads side by side at different levels (1 below). Deck failures left: East 175th St's
+deck at 40.84349,-73.89447 has a free end no road leads onto, and two 0.05-0.06 m steps onto decks (Cross Bronx Expwy
+service road 40.84502,-73.90481, Weeks Ave 40.84516,-73.90754). Gaps: none (the 6 on Flatbush Ave and Rector St's on
+Broadway were parts under construction, below). Junction spreads, ramps and divided pairs are listed by connect_check
+but not ranked here: they are slopes, not steps.
+
+Walls and steps left, by what they are up against (connect_check names the plan beside each):
+
+1. **Two roads side by side at different levels whose carriageways overlap** (most of what is left): a street on the
+   rim of a trench beside the motorway in it or a road on a viaduct's ramp beside the one under it, their centre lines
+   closer than their two half widths in the map (Columbia Heights, Furman St and the BQE's triple cantilever,
+   40.6935,-73.9993, which the map has as ground, layer 1, over Furman St; Hicks St on the BQE's Red Hook trench,
+   40.6813,-74.0025; the RFK Bridge's Queens approach and 26th St / Hoyt Ave, 40.7727,-73.9203, 3.35 m, on main too;
+   Borden Ave, 40.7292,-73.9106). The heightfield can't hold both: one gets a step at the other's wall. Needs a stacked
+   or walled-in pair handled in grade_points (the Rust kernel), or decks for the upper one.
+2. **Elevated railways mapped as short bridges over each street with ground between**: the DEM has no viaduct, the rail
+   decks are taken straight between ends at the street's level, and the streets under them dip 6-8 m (East Harlem and
+   Mott Haven under Metro-North, 40.799-40.812,-73.937; the GCP beside the LIRR at Flushing, 91029092, 40.7500,-73.8509,
+   2.57 m, on main too). The road version of this is fixed (the gap fill); rails need the same in railways.py.
+3. **Underpasses under the Grand Concourse**: its service roads cross the cross streets' underpass mouths (Burnside
+   40.8524,-73.9037, Tremont 40.8494,-73.9060, Bedford Park 40.8721,-73.8879, 161st 40.8268,-73.9227), 0.6-1.2 m.
+   Carrying the portals past them helped Burnside and broke East 175th St (Done table): the street's own ground part
+   climbs the DEM's smoothed wall at the portal, which wants a mirrored `fill_abutment` (a cut kept to the portal).
+4. **Junction spreads** (hundreds per corridor, most 0.05-0.4 m): at a crossroads two roads' plans are smoothed apart
+   (a flat avenue and a cross street climbing out of it: 4th Ave / 17th St 0.41 m, 40.66492,-73.99329); the ground
+   blends them into a slope. Needs one height per node that every cell computes the same.
+5. **Flatbush Ave's 6 "gaps"** (40.6775-40.6849,-73.9727..-73.9779) on main and the branch alike were parts under
+   construction (`highway=construction`), not drawn by design (GitHub #184); connect_check skips them now.
+
+Where to drive (the fixes): Seeley St / 18th St (40.65408,-73.97760), the exit at Fort Hamilton Pkwy (40.64932,
+-73.97512), Kent Ave and Hewes St under the BQE (40.7006,-73.9626), Division Ave (40.70719,-73.95767), the BQE exit to
+Kent Ave (40.69604,-73.96365), Adams St in DUMBO (40.70189,-73.98860), East Burnside Ave and the Concourse
+(40.85240,-73.90360), 4th Ave over the Bay Ridge cut (40.65315,-74.00572), the Washington Bridge's Bronx end
+(40.84511,-73.92253), and the Prospect Expwy as before (11th Ave 40.6476,-73.9770).
 
 ## Open problems (ranked by how much they hurt driving)
 
@@ -168,6 +205,18 @@ ones are listed); no regression in the other cities; tests pass.
    (ad9c961c, 40.6545,-73.9764) over Prospect Ave, 4.3 m between the two in the DEM, 7.25 m from the deck's top to the
    road under (4.9 m headroom + 2.2 m of slab and girders + margin): Seeley rises ~3 m on 80 m ramps (5 %). Neither
    road is a town motorway, so neither gives way first.
+8. **Roads side by side at different levels with overlapping carriageways** (a street on a trench's rim, a ramp beside
+   the road it climbs from, the BQE's triple cantilever over Furman St mapped as ground): the heightfield holds one of
+   them, the other gets a step. The biggest walls left on the corridors (NEXT, walls left, 1). Needs the pair walled
+   apart at the carriageways' edges in grade_points (Rust), or decks for the upper one.
+9. **Elevated railways mapped as short bridges with ground between** (Metro-North in East Harlem and Mott Haven, the
+   LIRR by Flushing): the rail decks are straight between ends at the DEM's street level, so the streets under them dip
+   6-8 m. The roads' version is fixed (`_fill_gap`); railways.py's decks and grade plans need the same.
+10. **A dip spreads through a street grid**: the kernel carries a junction's dip along every joined road at half grade
+   (up to ~420 m for 8 m), so a deep dip sinks the blocks around it while alleys and lots beside stay at the DEM
+   (Baltimore's South Macon St, 3.3 m, 39.2817,-76.5573). And a divided road's decks: each carriageway's ramps are held
+   down by the other carriageway beside it (`approach_add`), so the road under takes the whole clearance (Springfield's
+   Franconia Rd, 7-8 m, 38.7779,-77.1754).
 
 ## Repro spots
 

@@ -247,8 +247,8 @@ for f in feats:
             continue
         sub = str(f.attrs["subtype"][i]) if "subtype" in f.attrs else "road"
         cls = str(f.attrs["class"][i]) if "class" in f.attrs else "unknown"
-        if sub != "road" or cls not in DRIVE or (cls == "service" and not args.service):
-            continue
+        if sub != "road" or cls not in DRIVE or (cls == "service" and not args.service) or roads.unbuilt(f, i):
+            continue                    # (a road under construction is not drawn, by design: GitHub #184)
         nm = str(f.attrs["name"][i]) if "name" in f.attrs and f.attrs["name"][i] is not None else ""
         feat_of[fid] = (f, i)
         a = f.coord_off[f.ring_off[f.part_off[i]]]
